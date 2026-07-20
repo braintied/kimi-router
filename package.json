@@ -1,13 +1,14 @@
 {
   "name": "@braintied/kimi-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, health-aware Kimi credential router and Claude Code launcher",
   "type": "module",
   "bin": {
     "kimi-router": "./router.mjs",
     "kimi-claude": "./kimi",
     "kimi-router-install": "./install.mjs",
-    "kimi-router-migrate": "./migrate-keychain.mjs"
+    "kimi-router-migrate": "./migrate-keychain.mjs",
+    "kimi-router-relabel": "./relabel-accounts.mjs"
   },
   "files": [
     "router.mjs",
@@ -17,6 +18,8 @@
     "install.mjs",
     "migrate-keychain.mjs",
     "keychain-write.swift",
+    "relabel-accounts.mjs",
+    "keychain-relabel.swift",
     "README.md",
     "SECURITY.md",
     "CHANGELOG.md",
@@ -25,8 +28,8 @@
     "scripts"
   ],
   "scripts": {
-    "check": "node --check router.mjs && node --check provider-adapters.mjs && node --check secret-store.mjs && node --check scripts/build-release.mjs && node --check install.mjs && node --check migrate-keychain.mjs && zsh -n kimi",
-    "test": "node provider-adapters.test.mjs && node secret-store.test.mjs && node router.test.mjs && node router.v3.test.mjs && node state-lifecycle.test.mjs && node launcher.test.mjs",
+    "check": "node --check router.mjs && node --check provider-adapters.mjs && node --check secret-store.mjs && node --check scripts/build-release.mjs && node --check install.mjs && node --check migrate-keychain.mjs && node --check relabel-accounts.mjs && zsh -n kimi",
+    "test": "node provider-adapters.test.mjs && node secret-store.test.mjs && node relabel-accounts.test.mjs && node router.test.mjs && node router.v3.test.mjs && node state-lifecycle.test.mjs && node launcher.test.mjs",
     "secrets:check": "node scripts/check-secrets.mjs",
     "artifact:check": "node scripts/inspect-package.mjs",
     "release:build": "node scripts/build-release.mjs",

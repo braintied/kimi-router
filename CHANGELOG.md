@@ -3,7 +3,17 @@
 All notable changes are recorded here. This project follows Semantic
 Versioning once the public API reaches `1.0.0`.
 
-## 0.1.0 - Unreleased
+## 0.1.1 - 2026-07-19
+
+- Add transactional macOS Keychain relabeling to replace personal account
+  identifiers with opaque aliases without printing source metadata or secrets.
+- Add deterministic relabel validation and atomic-file tests.
+- Document GitHub Packages' mandatory classic-PAT authentication and provide a
+  no-registry-login install path through the public release artifact.
+- Correct package documentation formatting and include the relabel command in
+  package, security, migration, CLI, operations, and release references.
+
+## 0.1.0 - 2026-07-19
 
 - Add explicit membership, Open Platform, and custom provider adapters.
 - Add schema-v2 atomic state, live/stale writer locks, corruption quarantine,

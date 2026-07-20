@@ -26,6 +26,21 @@ eligible membership tier. All remaining arguments pass unchanged to `claude`.
 | `kimi --logs` | Tail the local structured log |
 | `kimi --help` | Usage summary |
 
+The package also installs:
+
+| Command | Result |
+|---|---|
+| `kimi-router` | Run the gateway directly |
+| `kimi-router-install` | Install files and optionally activate launchd |
+| `kimi-router-migrate` | Move a labelled legacy plaintext pool into Keychain |
+| `kimi-router-relabel` | Replace identifying Keychain account names with opaque aliases |
+
+`kimi-router-relabel` accepts one repeated `--alias NAME` per current account,
+in file order. `--dry-run` validates counts and names. `--delete-old` removes
+old Keychain account metadata only after copy verification and the atomic alias
+file swap succeed. `--audit` reports aggregate Keychain item counts without
+returning account names and exits nonzero if email-shaped metadata remains.
+
 Management authentication is read from a mode-`0600` curl header file. The
 bearer value is not placed in process arguments. `/healthz` remains unauthenticated
 and exposes only readiness/draining booleans.

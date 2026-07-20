@@ -1,7 +1,7 @@
 # @braintied/kimi-router
 
 Kimi Router is a localhost-only, Keychain-backed proxy for using Kimi Code with
-Claude Code. It keeps labelled personal accounts in a health-aware pool and
+Claude Code. It keeps opaque-labelled operator accounts in a health-aware pool and
 retries an eligible request on another account when Kimi reports an
 account-specific quota or capability failure. Provider adapters keep Kimi Code
 membership, Kimi Open Platform, and custom pass-through contracts explicit; the
@@ -21,13 +21,14 @@ OpenAI-compatible endpoints and preserves long-lived SSE streams with raw
 | Deployed router | `~/.local/share/kimi-router/router.mjs` |
 | Provider adapters | `~/.local/share/kimi-router/provider-adapters.mjs` |
 | Launcher | `~/.local/bin/kimi` |
-| Keychain label file | `~/.kimi-key-accounts` |
+| Opaque account-alias file | `~/.kimi-key-accounts` |
 | Persistent health state | `~/.kimi-key-router-state.json` |
 | Structured rotating log | `~/.local/state/kimi-router/router.jsonl` |
 | launchd service | `~/Library/LaunchAgents/ai.ora.kimi-key-router.plist` |
 
-The label file contains email-style account labels only. Secrets are generic
-password items in macOS Keychain under service `ai.ora.kimi-key-router`.
+The account file contains opaque aliases such as `team-primary`, never email
+addresses or secrets. Credentials are generic-password items in macOS Keychain
+under service `ai.ora.kimi-key-router`.
 
 ## What v3 changes
 
@@ -105,12 +106,12 @@ Add or update an account without putting the secret in shell history:
 ```bash
 security add-generic-password -U \
   -s ai.ora.kimi-key-router \
-  -a account@example.com \
+  -a team-primary \
   -w
 ```
 
 Keep `-w` last with no following argument. macOS prompts for the secret. Then
-add the account label as its own line in `~/.kimi-key-accounts` and run:
+add the same opaque alias as its own line in `~/.kimi-key-accounts` and run:
 
 ```bash
 kimi --reload
@@ -123,10 +124,31 @@ then remove the Keychain item:
 ```bash
 security delete-generic-password \
   -s ai.ora.kimi-key-router \
-  -a account@example.com
+  -a team-primary
 ```
 
 An in-flight removed account appears as `retiring` until its final stream ends.
+Do not use an email address, username, or other personal identifier as the alias.
+
+To replace legacy identifying Keychain account names transactionally, provide
+one safe alias for each current account-file line, in the same order:
+
+```bash
+kimi-router-relabel --dry-run \
+  --alias team-primary \
+  --alias team-secondary \
+  --alias personal
+kimi-router-relabel --delete-old \
+  --alias team-primary \
+  --alias team-secondary \
+  --alias personal
+```
+
+The command copies and verifies every credential inside Security.framework,
+atomically swaps the alias file, and only then removes the old Keychain account
+metadata. Source identifiers and secret values are never printed. Run
+`kimi-router-relabel --audit` afterward to report counts only and fail if any
+email-shaped Keychain account metadata remains.
 
 ## Failure policy
 
@@ -183,6 +205,28 @@ without placing the token in process arguments:
 | `POST /reset` | operator-only circuit reset |
 
 ## Install and update
+
+The attached public GitHub Release tarball is the no-registry-login install
+path:
+
+```bash
+npm install --global \
+  https://github.com/braintied/kimi-router/releases/download/v0.1.1/braintied-kimi-router-0.1.1.tgz
+```
+
+GitHub Packages requires authentication even for public npm packages. To use the
+registry build, create a classic GitHub PAT with `read:packages`, authenticate
+interactively, then install:
+
+```bash
+npm login --scope=@braintied --auth-type=legacy \
+  --registry=https://npm.pkg.github.com
+npm install --global @braintied/kimi-router@0.1.1
+```
+
+Never commit the PAT or put it directly in a command. GitHub documents the
+authentication requirement in
+[Working with the npm registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
 
 Run tests first, migrate a legacy plaintext pool if one exists, install without
 interrupting the service, validate on a parallel port, then activate:
@@ -267,10 +311,11 @@ publication use Ubuntu; the Keychain helper and full macOS path have a separate
 manually dispatched macOS validation workflow.
 
 The suites use mock upstreams and a production-disabled fake clock. They cover
-+schema migration, corrupt-state quarantine, live/stale writer locks, structured
-+errors, explicit quota-window sources, the exhausted-account/usable-capacity
-+regression, and credential rotation while an accepted stream survives.
-+
+schema migration, corrupt-state quarantine, live/stale writer locks, structured
+errors, explicit quota-window sources, the exhausted-account/usable-capacity
+regression, account-alias validation, and credential rotation while an accepted
+stream survives.
+
 The v3 suite also covers official error scopes, no-spray provider/request failures,
 model circuits, unknown-403 safety, ambiguous replay suppression, exact reset
 headers, management authentication, both orderings of contradictory concurrent

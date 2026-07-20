@@ -14,8 +14,11 @@ repository.
 
 The router must never write credential values to configuration, state, logs,
 status responses, crash output, tests, fixtures, package artifacts, or version
-control. macOS installations use generic-password items in Keychain. The label
-file contains identifiers only and must remain permission-restricted.
+control. macOS installations use generic-password items in Keychain. The
+account file contains opaque, non-personal aliases only and must remain
+permission-restricted. Use `kimi-router-relabel` to replace legacy identifying
+Keychain account names without printing source identifiers or moving secret
+values through shell arguments.
 
 `KIMI_API_KEYS` and the legacy plaintext key file are migration and isolated-test
 paths. They are intentionally not the recommended production configuration.

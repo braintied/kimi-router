@@ -10,6 +10,10 @@
 - authenticated package publisher with `write:packages` (or registry-equivalent)
   permission.
 
+GitHub Packages npm installs require a classic PAT with `read:packages` even
+when package visibility is public. Release notes must state that requirement and
+also point to the public GitHub Release tarball for a login-free install.
+
 ## Gates
 
 ```text

@@ -35,7 +35,7 @@ Kimi's current first-party endpoint and Claude Code examples are documented in
 | `KIMI_PROVIDER_PROFILE` | `kimi-code-membership` | Provider/protocol/auth contract |
 | `KIMI_BASE_URL` | profile default | Explicit upstream override |
 | `KIMI_AUTH_MODE` | `both` | Custom-profile authentication only |
-| `KIMI_ACCOUNTS_FILE` | `~/.kimi-key-accounts` | Ordered secret-store account labels |
+| `KIMI_ACCOUNTS_FILE` | `~/.kimi-key-accounts` | Ordered opaque secret-store aliases |
 | `KIMI_KEYCHAIN_SERVICE` | `ai.ora.kimi-key-router` | Secret-store service/collection |
 | `KIMI_SECRET_BACKEND` | `auto` | `macos-keychain` or `linux-secret-service` |
 | `KIMI_ROUTER_STATE` | `~/.kimi-key-router-state.json` | Redacted versioned health metadata |
@@ -54,6 +54,11 @@ Kimi's current first-party endpoint and Claude Code examples are documented in
 
 The test-only fake clock requires both `NODE_ENV=test` and
 `KIMI_TEST_CLOCK_FILE`. Production startup rejects that variable.
+
+Account aliases must be non-personal operator names such as `team-primary`.
+Do not put email addresses, usernames, tokens, or secrets in the account file.
+On macOS, `kimi-router-relabel` safely upgrades legacy identifying Keychain
+account names.
 
 ## Routing and cooldown policy
 
@@ -89,7 +94,7 @@ compatibility default because Kimi documents it as the workaround for unsupporte
 
 ## Precedence and unsafe test inputs
 
-`KIMI_KEYS_FILE` overrides the secret-store label file. `KIMI_API_KEYS` is used
+`KIMI_KEYS_FILE` overrides the secret-store account file. `KIMI_API_KEYS` is used
 only when non-empty and no explicit file is selected. Both expose secret
 material outside the OS secret store and exist solely for migration and isolated
 tests; never place either in a service definition or shell profile.

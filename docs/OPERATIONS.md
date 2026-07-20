@@ -16,13 +16,23 @@ compatible account is available or has a trustworthy scheduled recovery.
 
 1. Write the secret directly to macOS Keychain or Linux Secret Service without
    a command-line value.
-2. Add its sanitized account label to the account file if it is new.
+2. Add its opaque, non-personal account alias to the account file if it is new.
 3. Run `kimi --reload`.
 4. Confirm the credential count/source and account health with `--status`.
 
 For replacement under the same label, accepted streams retain the old in-memory
 credential until completion; new requests use the replacement. The old entry is
 `retiring` and disappears when its in-flight count reaches zero.
+
+## Remove personal identifiers from account names
+
+On macOS, run `kimi-router-relabel --dry-run` with one repeated safe
+`--alias` per current account-file line. Then rerun with `--delete-old`.
+The helper copies and verifies credentials within Security.framework, swaps the
+account file atomically, and deletes old Keychain metadata last. It reports
+counts and new aliases only; source identifiers and credentials are not printed.
+Finish with `kimi-router-relabel --audit`; a clean result has zero
+email-shaped identifiers.
 
 ## Deploy an update
 
