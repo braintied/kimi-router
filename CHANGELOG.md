@@ -16,3 +16,4 @@ Versioning once the public API reaches `1.0.0`.
 - Persist quota health by stable account identity and isolate credential-rejection circuits.
 - Add a tested cross-platform secret-store interface for macOS Keychain and Linux Secret Service.
 - Add graceful activation, persistent file backups, health verification, and automatic service rollback.
+- Add reproducible release tarballs with SHA-256 checksums and commit-bound provenance.

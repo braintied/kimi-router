@@ -22,4 +22,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm run gate
       - run: npm run artifact:check
+      - run: node scripts/build-release.mjs --output "$RUNNER_TEMP/release-a"
+      - run: node scripts/build-release.mjs --output "$RUNNER_TEMP/release-b"
+      - run: cmp "$RUNNER_TEMP"/release-a/*.tgz "$RUNNER_TEMP"/release-b/*.tgz
       - run: xcrun swiftc -typecheck keychain-write.swift

@@ -25,6 +25,7 @@ jobs:
           scope: '@braintied'
       - run: npm run gate
       - run: npm run artifact:check
+      - run: npm run release:build
       - run: xcrun swiftc -typecheck keychain-write.swift
       - run: npm publish --access public
         env:
