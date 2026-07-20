@@ -14,6 +14,12 @@ passed local acceptance checks.
 9. Require the candidate to pass loopback health checks; automatically restore the previous files and plist if it does not.
 10. Verify existing proxy-launched sessions, new sessions, status, and rollback.
 
+Account labels are stable quota identities; credential hashes own rejection
+circuits. Hot replacement keeps an accepted old stream alive while new requests
+use the replacement. Unversioned health files migrate from schema v1 to v2;
+invalid JSON is quarantined. Never migrate Keychain material, lock files, or raw
+logs.
+
 Terminals started with the stable local proxy can receive credential changes
 without restarting. Terminals configured directly for Kimi, or started before
 the proxy variables were applied, must be relaunched. Changing provider or model

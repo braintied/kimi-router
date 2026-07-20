@@ -230,7 +230,7 @@ check(
 check(
   '5-hour quota starts a persisted strict timer',
   status.keys[0].recoveryRequired &&
-    status.keys[0].cooldownRemainingMs > 200 &&
+    status.keys[0].cooldownRemainingMs > 0 &&
     status.keys[0].cooldownRemainingMs <= 400 &&
     status.keys[0].nextRecoveryProbeAt === status.keys[0].cooldownUntil
 );

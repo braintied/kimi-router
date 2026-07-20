@@ -5,6 +5,14 @@ Versioning once the public API reaches `1.0.0`.
 
 ## 0.1.0 - Unreleased
 
+- Add explicit membership, Open Platform, and custom provider adapters.
+- Add schema-v2 atomic state, live/stale writer locks, corruption quarantine,
+  persisted provider health, and explicit quota-window metadata.
+- Parse bounded structured error fields and rate-limit reset variants.
+- Add deterministic fake-clock lifecycle and usable-capacity regression tests.
+- Verify hot credential replacement preserves accepted proxy streams.
+- Add configuration, CLI, troubleshooting, operations, threat, and release docs.
+
 - Extract the tested Kimi Router v3 prototype into a standalone package.
 - Add package, CI, security, artifact, and publication gates.
 - Preserve the existing local deployment until migration acceptance checks pass.

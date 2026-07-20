@@ -21,9 +21,11 @@ const managementHeaderFile = path.join(configDir, 'management.header');
 const launchAgentsDir = path.join(home, 'Library', 'LaunchAgents');
 const plistPath = path.join(launchAgentsDir, 'ai.ora.kimi-key-router.plist');
 const installedRouter = path.join(installDir, 'router.mjs');
+const installedProviderAdapters = path.join(installDir, 'provider-adapters.mjs');
 const installedSecretStore = path.join(installDir, 'secret-store.mjs');
 const installedLauncher = path.join(binDir, 'kimi');
 const rollbackRouter = path.join(rollbackDir, 'router.mjs');
+const rollbackProviderAdapters = path.join(rollbackDir, 'provider-adapters.mjs');
 const rollbackSecretStore = path.join(rollbackDir, 'secret-store.mjs');
 const rollbackLauncher = path.join(rollbackDir, 'kimi');
 const accountsFile = path.join(home, '.kimi-key-accounts');
@@ -60,12 +62,18 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function restoreInstalledFiles(hadRouter, hadSecretStore, hadLauncher) {
+function restoreInstalledFiles(hadRouter, hadProviderAdapters, hadSecretStore, hadLauncher) {
   if (hadRouter && fs.existsSync(rollbackRouter)) {
     fs.copyFileSync(rollbackRouter, installedRouter);
     fs.chmodSync(installedRouter, 0o755);
   } else if (!hadRouter && fs.existsSync(installedRouter)) {
     fs.unlinkSync(installedRouter);
+  }
+  if (hadProviderAdapters && fs.existsSync(rollbackProviderAdapters)) {
+    fs.copyFileSync(rollbackProviderAdapters, installedProviderAdapters);
+    fs.chmodSync(installedProviderAdapters, 0o644);
+  } else if (!hadProviderAdapters && fs.existsSync(installedProviderAdapters)) {
+    fs.unlinkSync(installedProviderAdapters);
   }
   if (hadSecretStore && fs.existsSync(rollbackSecretStore)) {
     fs.copyFileSync(rollbackSecretStore, installedSecretStore);
@@ -81,7 +89,7 @@ function restoreInstalledFiles(hadRouter, hadSecretStore, hadLauncher) {
   }
 }
 
-for (const required of ['router.mjs', 'secret-store.mjs', 'kimi']) {
+for (const required of ['router.mjs', 'provider-adapters.mjs', 'secret-store.mjs', 'kimi']) {
   if (!fs.existsSync(path.join(sourceDir, required))) fail(`Missing source file: ${required}`);
 }
 const syntax = run(nodeExecutable, ['--check', path.join(sourceDir, 'router.mjs')]);
@@ -94,13 +102,17 @@ for (const directory of [installDir, rollbackDir, binDir, stateDir, configDir, l
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
 const hadRouter = fs.existsSync(installedRouter);
+const hadProviderAdapters = fs.existsSync(installedProviderAdapters);
 const hadSecretStore = fs.existsSync(installedSecretStore);
 const hadLauncher = fs.existsSync(installedLauncher);
 if (hadRouter) fs.copyFileSync(installedRouter, rollbackRouter);
+if (hadProviderAdapters) fs.copyFileSync(installedProviderAdapters, rollbackProviderAdapters);
 if (hadSecretStore) fs.copyFileSync(installedSecretStore, rollbackSecretStore);
 if (hadLauncher) fs.copyFileSync(installedLauncher, rollbackLauncher);
 fs.copyFileSync(path.join(sourceDir, 'router.mjs'), installedRouter);
 fs.chmodSync(installedRouter, 0o755);
+fs.copyFileSync(path.join(sourceDir, 'provider-adapters.mjs'), installedProviderAdapters);
+fs.chmodSync(installedProviderAdapters, 0o644);
 fs.copyFileSync(path.join(sourceDir, 'secret-store.mjs'), installedSecretStore);
 fs.chmodSync(installedSecretStore, 0o644);
 fs.copyFileSync(path.join(sourceDir, 'kimi'), installedLauncher);
@@ -128,6 +140,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>KIMI_PROVIDER_PROFILE</key><string>kimi-code-membership</string>
     <key>KIMI_BASE_URL</key><string>https://api.kimi.com</string>
     <key>KIMI_ACCOUNTS_FILE</key><string>${xml(accountsFile)}</string>
     <key>KIMI_KEYCHAIN_SERVICE</key><string>ai.ora.kimi-key-router</string>
@@ -156,11 +169,12 @@ fs.chmodSync(plistPath, 0o600);
 const lint = run('/usr/bin/plutil', ['-lint', plistPath]);
 if (lint.status !== 0) {
   if (previousPlist !== null) fs.writeFileSync(plistPath, previousPlist, { mode: 0o600 });
-  restoreInstalledFiles(hadRouter, hadSecretStore, hadLauncher);
+  restoreInstalledFiles(hadRouter, hadProviderAdapters, hadSecretStore, hadLauncher);
   fail(`Generated launchd plist is invalid: ${lint.stderr || lint.stdout}`);
 }
 
 console.log(`Installed router: ${installedRouter}`);
+console.log(`Installed provider adapters: ${installedProviderAdapters}`);
 console.log(`Installed secret-store adapter: ${installedSecretStore}`);
 console.log(`Installed launcher: ${installedLauncher}`);
 console.log(`Installed service definition: ${plistPath}`);
@@ -178,7 +192,7 @@ if (Number.isInteger(currentPid) && currentPid > 0) {
   const drainDeadline = Date.now() + 125_000;
   while (processAlive(currentPid) && Date.now() < drainDeadline) sleep(100);
   if (processAlive(currentPid)) {
-    restoreInstalledFiles(hadRouter, hadSecretStore, hadLauncher);
+    restoreInstalledFiles(hadRouter, hadProviderAdapters, hadSecretStore, hadLauncher);
     if (previousPlist !== null) fs.writeFileSync(plistPath, previousPlist, { mode: 0o600 });
     fail('Existing router did not drain before the activation deadline; previous files were restored.');
   }
@@ -198,7 +212,7 @@ if (bootstrap.status === 0) {
 }
 if (!healthy) {
   run('/bin/launchctl', ['bootout', domain, plistPath]);
-  restoreInstalledFiles(hadRouter, hadSecretStore, hadLauncher);
+  restoreInstalledFiles(hadRouter, hadProviderAdapters, hadSecretStore, hadLauncher);
   if (previousPlist !== null) {
     fs.writeFileSync(plistPath, previousPlist, { mode: 0o600 });
     const rollback = run('/bin/launchctl', ['bootstrap', domain, plistPath]);

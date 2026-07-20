@@ -11,6 +11,7 @@
   },
   "files": [
     "router.mjs",
+    "provider-adapters.mjs",
     "secret-store.mjs",
     "kimi",
     "install.mjs",
@@ -24,8 +25,8 @@
     "scripts"
   ],
   "scripts": {
-    "check": "node --check router.mjs && node --check secret-store.mjs && node --check scripts/build-release.mjs && node --check install.mjs && node --check migrate-keychain.mjs && zsh -n kimi",
-    "test": "node secret-store.test.mjs && node router.test.mjs && node router.v3.test.mjs && node launcher.test.mjs",
+    "check": "node --check router.mjs && node --check provider-adapters.mjs && node --check secret-store.mjs && node --check scripts/build-release.mjs && node --check install.mjs && node --check migrate-keychain.mjs && zsh -n kimi",
+    "test": "node provider-adapters.test.mjs && node secret-store.test.mjs && node router.test.mjs && node router.v3.test.mjs && node state-lifecycle.test.mjs && node launcher.test.mjs",
     "secrets:check": "node scripts/check-secrets.mjs",
     "artifact:check": "node scripts/inspect-package.mjs",
     "release:build": "node scripts/build-release.mjs",

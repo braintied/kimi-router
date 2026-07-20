@@ -1,8 +1,10 @@
 # Error and replay policy
 
 The classifier is based on Kimi's first-party error reference, last verified
-2026-07-19. Text matching is a fallback; structured error fields and trustworthy
-reset headers take precedence when available.
+2026-07-19. The router first parses bounded `message`, `detail`, `code`,
+`type`, and `reason` fields from the root/error/details objects. Text matching is
+a fallback only for non-JSON responses; unrelated JSON fields cannot trigger
+rotation. Trustworthy reset headers take precedence over policy windows.
 
 | Response | Scope | Action |
 |---|---|---|
@@ -27,4 +29,8 @@ Unknown errors are request-scoped by default. In particular, an unknown 403
 is returned without rotation or account quarantine. A new provider message is
 not grounds to poison every credential. `Retry-After` wins over a valid
 `X-RateLimit-Reset`; reset values may be relative seconds, Unix seconds, Unix
-milliseconds, or an HTTP date.
+milliseconds, or an HTTP date. Reset names include
+`X-RateLimit-Reset`, `X-RateLimit-Reset-Requests`, and
+`X-RateLimit-Reset-Tokens`, in that order. Status exposes quota-window kind,
+reset timestamp, and whether the source was `Retry-After`, a rate-limit header,
+or policy.

@@ -13,6 +13,7 @@ const MANAGEMENT_TOKEN = 'test-management-token';
 const routerPath = new URL('./router.mjs', import.meta.url).pathname;
 
 const primaryEntry = '# primary@example.com\ntest-primary\n';
+const rotatedPrimaryEntry = '# primary@example.com\ntest-primary-rotated\n';
 const backupEntry = '# backup@example.com\ntest-backup\n';
 const thirdEntry = '# third@example.com\ntest-third\n';
 
@@ -347,6 +348,30 @@ check('one queued request resumes when capacity is released', completedSaturated
 fs.writeFileSync(KEY_FILE, primaryEntry + backupEntry + thirdEntry, { mode: 0o600 });
 const autoReloaded = await waitUntil(async () => (await status()).summary.total === 3);
 check('key file changes hot-reload automatically', autoReloaded);
+
+await reset();
+await prefer();
+const credentialRotationStream = await post('slow-stream');
+await sleep(30);
+fs.writeFileSync(KEY_FILE, rotatedPrimaryEntry + backupEntry + thirdEntry, { mode: 0o600 });
+const credentialReload = await fetch(`${base}/reload`, { method: 'POST', headers: managementHeaders });
+const credentialReloadBody = await credentialReload.json();
+await prefer();
+const afterCredentialRotation = await post('ok');
+const afterCredentialRotationBody = await afterCredentialRotation.json();
+const credentialRotationBody = await credentialRotationStream.text();
+const credentialRotationDrained = await waitUntil(async () =>
+  (await status()).keys.filter((key) => key.label === 'primary@example.com').length === 1
+);
+check(
+  'credential hot rotation sends new requests through the replacement secret',
+  credentialReloadBody.added === 1 && credentialReloadBody.retiring === 1 &&
+    afterCredentialRotation.status === 200 && afterCredentialRotationBody.used === 'test-primary-rotated'
+);
+check(
+  'proxy session survives credential rotation while its original stream drains',
+  credentialRotationBody.includes('data: last') && credentialRotationDrained
+);
 
 await reset();
 await prefer();

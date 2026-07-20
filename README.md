@@ -3,7 +3,9 @@
 Kimi Router is a localhost-only, Keychain-backed proxy for using Kimi Code with
 Claude Code. It keeps labelled personal accounts in a health-aware pool and
 retries an eligible request on another account when Kimi reports an
-account-specific quota or capability failure.
+account-specific quota or capability failure. Provider adapters keep Kimi Code
+membership, Kimi Open Platform, and custom pass-through contracts explicit; the
+Claude Code launcher uses only the membership adapter.
 
 The router is zero-dependency Node.js code. OS secret access is isolated behind
 a portable interface with macOS Keychain and Linux Secret Service backends. It
@@ -17,6 +19,7 @@ OpenAI-compatible endpoints and preserves long-lived SSE streams with raw
 |---|---|
 | Package checkout | the standalone `braintied/kimi-router` repository |
 | Deployed router | `~/.local/share/kimi-router/router.mjs` |
+| Provider adapters | `~/.local/share/kimi-router/provider-adapters.mjs` |
 | Launcher | `~/.local/bin/kimi` |
 | Keychain label file | `~/.kimi-key-accounts` |
 | Persistent health state | `~/.kimi-key-router-state.json` |
@@ -52,6 +55,10 @@ password items in macOS Keychain under service `ai.ora.kimi-key-router`.
   streams and stop receiving new work.
 - Gracefully drains streams on SIGTERM/SIGINT.
 - Emits permission-restricted JSONL logs with rotation and bounded error bodies.
+- Persists schema-v2 health metadata through a single-writer lock, fsynced
+  atomic rename, legacy migration, stale-lock recovery, and corruption quarantine.
+- Extracts bounded structured error fields before conservative text fallback and
+  records explicit five-hour/weekly/monthly quota-window kind, reset, and source.
 
 ## Request flow
 
@@ -196,12 +203,16 @@ reloads the previous plist if the new launchd bootstrap fails.
 
 ## Configuration
 
+See the complete [configuration reference](docs/CONFIGURATION.md).
+
 | Variable | Default |
 |---|---|
 | `KIMI_ACCOUNTS_FILE` | `~/.kimi-key-accounts` |
 | `KIMI_KEYCHAIN_SERVICE` | `ai.ora.kimi-key-router` |
 | `KIMI_SECRET_BACKEND` | `auto` (macOS Keychain or Linux Secret Service) |
-| `KIMI_BASE_URL` | `https://api.moonshot.ai` (installed service uses `https://api.kimi.com`) |
+| `KIMI_PROVIDER_PROFILE` | `kimi-code-membership` |
+| `KIMI_BASE_URL` | selected profile's secure default |
+| `KIMI_ROUTER_LOCK` | state path plus `.lock` |
 | `KIMI_ROUTER_STATE` | `~/.kimi-key-router-state.json` |
 | `KIMI_LOG_FILE` | `~/.local/state/kimi-router/router.jsonl` |
 | `KIMI_MANAGEMENT_TOKEN_FILE` | `~/.config/kimi-router/management.header` |
@@ -255,9 +266,27 @@ the tarball twice and requires byte-for-byte equality. Portable CI and package
 publication use Ubuntu; the Keychain helper and full macOS path have a separate
 manually dispatched macOS validation workflow.
 
-The v3 suite covers official error scopes, no-spray provider/request failures,
+The suites use mock upstreams and a production-disabled fake clock. They cover
++schema migration, corrupt-state quarantine, live/stale writer locks, structured
++errors, explicit quota-window sources, the exhausted-account/usable-capacity
++regression, and credential rotation while an accepted stream survives.
++
+The v3 suite also covers official error scopes, no-spray provider/request failures,
 model circuits, unknown-403 safety, ambiguous replay suppression, exact reset
 headers, management authentication, both orderings of contradictory concurrent
 results, leak-proof in-flight accounting, load distribution, bounded
 queueing, automatic and explicit hot reload, draining removed keys, bounded
 error bodies, and graceful completion of an active stream.
+
+## Manuals
+
+- [CLI reference](docs/CLI.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Operations runbook](docs/OPERATIONS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Provider profiles](docs/PROVIDERS.md)
+- [Error and replay policy](docs/ERROR-POLICY.md)
+- [Management authentication](docs/MANAGEMENT-AUTH.md)
+- [Migration](docs/MIGRATION.md)
+- [Security and threat model](SECURITY.md)
+- [Release procedure](docs/RELEASE.md)

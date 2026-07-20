@@ -23,7 +23,9 @@
  *   KIMI_KEYCHAIN_SERVICE secret-store service (default ai.ora.kimi-key-router)
  *   KIMI_SECRET_BACKEND  auto, macos-keychain, or linux-secret-service
  *   KIMI_KEYS_FILE      explicit legacy/test key file (overrides Keychain)
- *   KIMI_BASE_URL       upstream base (default https://api.moonshot.ai)
+ *   KIMI_PROVIDER_PROFILE kimi-code-membership (default), kimi-open-platform,
+ *                              or custom
+ *   KIMI_BASE_URL       optional upstream override for the selected profile
  *   KIMI_ROUTER_STATE   state file path (default ~/.kimi-key-router-state.json)
  *   KIMI_MANAGEMENT_TOKEN_FILE bearer header file for management endpoints
  *                              (default ~/.config/kimi-router/management.header)
@@ -61,6 +63,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream';
 import { createSecretStore } from './secret-store.mjs';
+import {
+  applyProviderAuthentication,
+  publicProviderMetadata,
+  resolveProviderAdapter,
+} from './provider-adapters.mjs';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -97,7 +104,14 @@ const PORT = (() => {
   return parsed;
 })();
 const HOST = envString('HOST', '127.0.0.1');
-const UPSTREAM = envString('KIMI_BASE_URL', 'https://api.moonshot.ai').replace(/\/+$/, '');
+let PROVIDER_ADAPTER;
+try {
+  PROVIDER_ADAPTER = resolveProviderAdapter(process.env);
+} catch (err) {
+  console.error(`Invalid provider configuration: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+const UPSTREAM = PROVIDER_ADAPTER.baseUrl;
 const STATE_FILE = envString(
   'KIMI_ROUTER_STATE',
   path.join(os.homedir(), '.kimi-key-router-state.json')
@@ -117,6 +131,24 @@ const MANAGEMENT_TOKEN_FILE = envString(
   'KIMI_MANAGEMENT_TOKEN_FILE',
   path.join(os.homedir(), '.config', 'kimi-router', 'management.header')
 );
+const STATE_LOCK_FILE = envString('KIMI_ROUTER_LOCK', `${STATE_FILE}.lock`);
+const TEST_CLOCK_FILE = process.env.KIMI_TEST_CLOCK_FILE?.trim() || '';
+if (TEST_CLOCK_FILE !== '' && process.env.NODE_ENV !== 'test') {
+  console.error('KIMI_TEST_CLOCK_FILE is available only when NODE_ENV=test');
+  process.exit(1);
+}
+
+function nowMs() {
+  if (TEST_CLOCK_FILE !== '') {
+    try {
+      const value = Number(fs.readFileSync(TEST_CLOCK_FILE, 'utf8').trim());
+      if (Number.isFinite(value) && value >= 0) return value;
+    } catch {
+      // A malformed test clock falls back to wall time so shutdown cannot wedge.
+    }
+  }
+  return Date.now();
+}
 
 const COOLDOWN_5H = envMs('KIMI_COOLDOWN_5H_MS', 5 * HOUR);
 const COOLDOWN_WEEKLY = envMs('KIMI_COOLDOWN_WEEKLY_MS', 7 * DAY);
@@ -344,6 +376,7 @@ function createKey(entry, index) {
   lastStatus: null,
   latencyEwmaMs: null,
   rateLimit: null,
+  quotaWindow: null,
   pendingFailure: null,
   latestSuccessAttemptId: 0,
   latestFailureAttemptId: 0,
@@ -375,6 +408,68 @@ function stateId(raw) {
 
 function accountStateId(accountId) {
   return `account-${crypto.createHash('sha256').update(`account\0${accountId.toLowerCase()}`).digest('hex').slice(0, 16)}`;
+}
+
+const STATE_SCHEMA_VERSION = 2;
+const stateLockNonce = crypto.randomBytes(16).toString('hex');
+let stateLockHandle = null;
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+function acquireStateLock() {
+  fs.mkdirSync(path.dirname(STATE_LOCK_FILE), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const handle = fs.openSync(STATE_LOCK_FILE, 'wx', 0o600);
+      fs.writeFileSync(handle, JSON.stringify({ pid: process.pid, nonce: stateLockNonce }));
+      fs.fsyncSync(handle);
+      stateLockHandle = handle;
+      return;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      let holder = null;
+      try { holder = JSON.parse(fs.readFileSync(STATE_LOCK_FILE, 'utf8')); } catch { /* stale */ }
+      if (processAlive(holder?.pid)) {
+        throw new Error(`state is already owned by router process ${holder.pid}`);
+      }
+      try { fs.unlinkSync(STATE_LOCK_FILE); } catch (unlinkError) {
+        if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+      }
+    }
+  }
+  throw new Error('could not acquire the router state lock');
+}
+
+function releaseStateLock() {
+  if (stateLockHandle !== null) {
+    try { fs.closeSync(stateLockHandle); } catch { /* already closed */ }
+    stateLockHandle = null;
+  }
+  try {
+    const holder = JSON.parse(fs.readFileSync(STATE_LOCK_FILE, 'utf8'));
+    if (holder?.nonce === stateLockNonce) fs.unlinkSync(STATE_LOCK_FILE);
+  } catch {
+    // Another process may already have recovered a stale lock.
+  }
+}
+
+function quarantineCorruptState(reason) {
+  const destination = `${STATE_FILE}.corrupt-${Math.trunc(nowMs())}`;
+  try {
+    fs.renameSync(STATE_FILE, destination);
+    fs.chmodSync(destination, 0o600);
+    log('invalid router state quarantined; starting from clean metadata', { reason });
+  } catch {
+    log('invalid router state ignored; quarantine failed', { reason });
+  }
 }
 
 let stateDirty = false;
@@ -409,6 +504,7 @@ function flushState() {
       lastStatus: k.lastStatus,
       latencyEwmaMs: k.latencyEwmaMs,
       rateLimit: k.rateLimit,
+      quotaWindow: k.quotaWindow,
       latestSuccessAttemptId: k.latestSuccessAttemptId,
       latestFailureAttemptId: k.latestFailureAttemptId,
       capabilityCooldowns: k.capabilityCooldowns,
@@ -422,6 +518,10 @@ function flushState() {
       cooldownReason: k.credentialCooldownReason,
     };
   }
+  out.__meta = {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    writtenAt: new Date(nowMs()).toISOString(),
+  };
   out.__credentials = credentialState;
   out.__router = {
     rrPointer,
@@ -429,14 +529,23 @@ function flushState() {
     preferredUntil,
     lastExplorationAt,
     lastSelectionReason,
+    providerCooldownUntil,
+    providerCooldownReason,
   };
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true, mode: 0o700 });
-    const tmp = `${STATE_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(out, null, 2), { mode: 0o600 });
+    const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+    const handle = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeFileSync(handle, JSON.stringify(out, null, 2));
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
     fs.renameSync(tmp, STATE_FILE); // atomic on the same filesystem
-    fs.chmodSync(STATE_FILE, 0o600); // rename drops the mode; re-enforce
+    fs.chmodSync(STATE_FILE, 0o600);
   } catch (err) {
+    stateDirty = true;
     const message = err instanceof Error ? err.message : String(err);
     log(`warning: could not persist state: ${message}`);
   }
@@ -444,7 +553,7 @@ function flushState() {
 
 function loadState() {
   let raw;
-  let stateObservedAt = Date.now();
+  let stateObservedAt = nowMs();
   try {
     raw = fs.readFileSync(STATE_FILE, 'utf8');
     stateObservedAt = fs.statSync(STATE_FILE).mtimeMs;
@@ -455,8 +564,24 @@ function loadState() {
   try {
     saved = JSON.parse(raw);
   } catch {
-    log(`warning: state file ${STATE_FILE} is not valid JSON, ignoring it`);
+    quarantineCorruptState('invalid-json');
     return;
+  }
+  if (saved === null || typeof saved !== 'object' || Array.isArray(saved)) {
+    quarantineCorruptState('invalid-root');
+    return;
+  }
+  const schemaVersion = saved.__meta?.schemaVersion ?? 1;
+  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
+    quarantineCorruptState('invalid-schema-version');
+    return;
+  }
+  if (schemaVersion > STATE_SCHEMA_VERSION) {
+    throw new Error(`state schema ${schemaVersion} is newer than supported schema ${STATE_SCHEMA_VERSION}`);
+  }
+  if (schemaVersion < STATE_SCHEMA_VERSION) {
+    log('migrating router state metadata', { from: schemaVersion, to: STATE_SCHEMA_VERSION });
+    saveState();
   }
   const routerState = saved.__router;
   if (routerState !== null && typeof routerState === 'object') {
@@ -468,6 +593,12 @@ function loadState() {
     if (typeof routerState.lastExplorationAt === 'number') lastExplorationAt = routerState.lastExplorationAt;
     if (typeof routerState.lastSelectionReason === 'string') {
       lastSelectionReason = routerState.lastSelectionReason;
+    }
+    if (typeof routerState.providerCooldownUntil === 'number') {
+      providerCooldownUntil = routerState.providerCooldownUntil;
+    }
+    if (typeof routerState.providerCooldownReason === 'string') {
+      providerCooldownReason = routerState.providerCooldownReason.slice(0, 500);
     }
   }
   for (const k of keys) {
@@ -496,6 +627,16 @@ function loadState() {
     if (typeof s.lastStatus === 'number' || s.lastStatus === null) k.lastStatus = s.lastStatus;
     if (typeof s.latencyEwmaMs === 'number') k.latencyEwmaMs = s.latencyEwmaMs;
     if (s.rateLimit !== null && typeof s.rateLimit === 'object') k.rateLimit = s.rateLimit;
+    if (s.quotaWindow !== null && typeof s.quotaWindow === 'object' &&
+        typeof s.quotaWindow.kind === 'string' && typeof s.quotaWindow.resetAt === 'number') {
+      k.quotaWindow = {
+        kind: s.quotaWindow.kind.slice(0, 40),
+        resetAt: s.quotaWindow.resetAt,
+        source: typeof s.quotaWindow.source === 'string'
+          ? s.quotaWindow.source.slice(0, 40)
+          : 'migrated',
+      };
+    }
     if (typeof s.latestSuccessAttemptId === 'number') {
       k.latestSuccessAttemptId = s.latestSuccessAttemptId;
       nextAttemptId = Math.max(nextAttemptId, s.latestSuccessAttemptId + 1);
@@ -549,7 +690,7 @@ function loadState() {
     // lastStatus/lastSuccessAt but did not clear an older cooldownUntil. A
     // later successful response is authoritative evidence that the key works.
     if (
-      k.cooldownUntil > Date.now() &&
+      k.cooldownUntil > nowMs() &&
       k.lastStatus >= 200 &&
       k.lastStatus < 400 &&
       k.lastSuccessAt > k.lastFailureAt
@@ -557,6 +698,7 @@ function loadState() {
       log(`repairing stale cooldown for ${k.label} after persisted HTTP ${k.lastStatus} success`);
       k.cooldownUntil = 0;
       k.cooldownReason = '';
+      k.quotaWindow = null;
       k.nextRecoveryProbeAt = 0;
       k.recoveryRequired = false;
       k.recoveryProbeBackoffMs = RECOVERY_PROBE_INITIAL;
@@ -579,7 +721,7 @@ function loadState() {
     // opportunity from the last observed failure so a refilled account is not
     // stranded until a conservative 24-hour/weekly/monthly cooldown expires.
     if (
-      k.cooldownUntil > Date.now() &&
+      k.cooldownUntil > nowMs() &&
       recoveryProbeEligible(k.lastStatus, k.cooldownReason, k.recoveryRequired) &&
       k.nextRecoveryProbeAt === 0
     ) {
@@ -594,10 +736,10 @@ function loadState() {
     // Clamp old persisted schedules when the policy is tightened so a newly
     // replenished subscription cannot remain stranded behind yesterday's
     // hour-long backoff. Explicit five-hour timers remain strict.
-    const latestOrdinaryProbeAt = Date.now() + RECOVERY_PROBE_MAX;
+    const latestOrdinaryProbeAt = nowMs() + RECOVERY_PROBE_MAX;
     if (
       !k.recoveryRequired &&
-      k.cooldownUntil > Date.now() &&
+      k.cooldownUntil > nowMs() &&
       recoveryProbeEligible(k.lastStatus, k.cooldownReason) &&
       k.nextRecoveryProbeAt > latestOrdinaryProbeAt
     ) {
@@ -678,7 +820,7 @@ function requestCapability(body) {
   }
 }
 
-function capabilityCircuit(k, capability, now = Date.now()) {
+function capabilityCircuit(k, capability, now = nowMs()) {
   if (capability === '*') return null;
   const circuit = k.capabilityCooldowns[capability];
   if (circuit === undefined) return null;
@@ -690,11 +832,11 @@ function capabilityCircuit(k, capability, now = Date.now()) {
   return circuit;
 }
 
-function accountAvailable(k, now = Date.now()) {
+function accountAvailable(k, now = nowMs()) {
   return k.cooldownUntil <= now && !k.recoveryRequired && k.credentialCooldownUntil <= now;
 }
 
-function scoreKey(k, index, now = Date.now(), capability = '*') {
+function scoreKey(k, index, now = nowMs(), capability = '*') {
   if (
     k.retiring || !accountAvailable(k, now) ||
     capabilityCircuit(k, capability, now) !== null ||
@@ -768,7 +910,7 @@ function beginRecoveryProbe(candidate, now) {
 function deferRecoveryProbe(k) {
   if (!k.recoveryProbeInFlight) return;
   k.recoveryProbeInFlight = false;
-  const retryAt = Date.now() + Math.max(RECOVERY_PROBE_INITIAL, k.recoveryProbeBackoffMs);
+  const retryAt = nowMs() + Math.max(RECOVERY_PROBE_INITIAL, k.recoveryProbeBackoffMs);
   k.nextRecoveryProbeAt = k.recoveryRequired
     ? Math.max(k.cooldownUntil, retryAt)
     : Math.min(k.cooldownUntil, retryAt);
@@ -786,8 +928,14 @@ function clearExpiredPreference(now) {
 }
 
 function pickKey(capability = '*', excluded = new Set()) {
-  const now = Date.now();
+  const now = nowMs();
   clearExpiredPreference(now);
+  if (providerCooldownUntil > now) return null;
+  if (providerCooldownUntil > 0) {
+    providerCooldownUntil = 0;
+    providerCooldownReason = '';
+    saveState();
+  }
   const available = keys
     .map((k, index) => ({ k, index }))
     .filter(({ k }) =>
@@ -851,7 +999,7 @@ function pickKey(capability = '*', excluded = new Set()) {
 const capacityWaiters = [];
 
 function capacityBlocked(capability, excluded) {
-  const now = Date.now();
+  const now = nowMs();
   return keys.some((k) =>
     !k.retiring && !excluded.has(stateId(k.raw)) &&
     accountAvailable(k, now) && capabilityCircuit(k, capability, now) === null &&
@@ -860,7 +1008,7 @@ function capacityBlocked(capability, excluded) {
 }
 
 function recoveryProbeBlocked(capability, excluded) {
-  const now = Date.now();
+  const now = nowMs();
   return keys.some((k) =>
     !k.retiring && !excluded.has(stateId(k.raw)) &&
     k.recoveryProbeInFlight && capabilityCircuit(k, capability, now) === null
@@ -925,6 +1073,18 @@ function firstHeaderValue(value) {
   return String(value);
 }
 
+function rateLimitResetHeader(headers) {
+  for (const name of [
+    'x-ratelimit-reset',
+    'x-ratelimit-reset-requests',
+    'x-ratelimit-reset-tokens',
+  ]) {
+    const value = firstHeaderValue(headers[name]);
+    if (value !== null && value.trim() !== '') return value;
+  }
+  return null;
+}
+
 function updateRateLimit(k, headers) {
   const rawLimit = firstHeaderValue(headers['x-ratelimit-limit']);
   const rawRemaining = firstHeaderValue(headers['x-ratelimit-remaining']);
@@ -932,13 +1092,13 @@ function updateRateLimit(k, headers) {
   const limit = Number(rawLimit);
   const remaining = Number(rawRemaining);
   if (!Number.isFinite(limit) || !Number.isFinite(remaining)) return;
-  const reset = firstHeaderValue(headers['x-ratelimit-reset']);
+  const reset = rateLimitResetHeader(headers);
   const resetMs = parseRateLimitReset(reset);
   k.rateLimit = {
     limit,
     remaining,
     reset: reset === null ? null : reset.slice(0, 120),
-    resetAt: resetMs === null ? null : new Date(Date.now() + resetMs).toISOString(),
+    resetAt: resetMs === null ? null : new Date(nowMs() + resetMs).toISOString(),
   };
 }
 
@@ -953,11 +1113,12 @@ let providerCooldownUntil = 0;
 let providerCooldownReason = '';
 
 function applyFailure(k, failure) {
-  const now = Date.now();
+  const now = nowMs();
   const failedRecoveryProbe = k.recoveryProbeInFlight;
   if (failure.scope === 'provider') {
     providerCooldownUntil = now + failure.cooldownMs;
     providerCooldownReason = failure.reason;
+    saveState();
     log('provider circuit opened', { reason: failure.reason, until: isoOrNull(providerCooldownUntil) });
     return;
   }
@@ -995,6 +1156,7 @@ function applyFailure(k, failure) {
   const preserveRequiredRecovery = failedRecoveryProbe && k.recoveryRequired;
   k.cooldownUntil = Math.min(8_000_000_000_000_000, now + failure.cooldownMs);
   k.cooldownReason = failure.reason;
+  k.quotaWindow = failure.quotaWindow ?? null;
   k.recoveryRequired = failure.probeAfterCooldown === true || preserveRequiredRecovery;
   if (
     recoveryProbeEligible(failure.status, failure.reason, k.recoveryRequired) &&
@@ -1031,7 +1193,7 @@ function applyFailure(k, failure) {
 }
 
 function recordFailure(k, classification, attemptId, status, latencyMs, capability) {
-  const now = Date.now();
+  const now = nowMs();
   const failure = { ...classification, attemptId, status, capability };
   k.fails += 1;
   updateLatency(k, latencyMs);
@@ -1060,7 +1222,7 @@ function recordFailure(k, classification, attemptId, status, latencyMs, capabili
 }
 
 function recordSuccess(k, attemptId, capability, status, latencyMs, headers) {
-  const now = Date.now();
+  const now = nowMs();
   k.successes += 1;
   k.accepted += 1;
   k.latestSuccessAttemptId = Math.max(k.latestSuccessAttemptId, attemptId);
@@ -1083,6 +1245,7 @@ function recordSuccess(k, attemptId, capability, status, latencyMs, headers) {
   k.lastStatus = status;
   k.cooldownUntil = 0;
   k.cooldownReason = '';
+  k.quotaWindow = null;
   k.credentialCooldownUntil = 0;
   k.credentialCooldownReason = '';
   k.nextRecoveryProbeAt = 0;
@@ -1123,7 +1286,7 @@ function parseRetryAfter(value) {
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed > Date.now() ? parsed - Date.now() : null;
+  return Number.isFinite(parsed) && parsed > nowMs() ? parsed - nowMs() : null;
 }
 
 function retryAfterReason(value) {
@@ -1131,12 +1294,12 @@ function retryAfterReason(value) {
   const seconds = Number(value);
   if (Number.isFinite(seconds) && seconds > 0) return `retry-after ${seconds}s`;
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) && parsed > Date.now()
+  return Number.isFinite(parsed) && parsed > nowMs()
     ? `retry-after until ${new Date(parsed).toISOString()}`
     : '';
 }
 
-function parseRateLimitReset(value, now = Date.now()) {
+function parseRateLimitReset(value, now = nowMs()) {
   if (value === null) return null;
   const trimmed = value.trim();
   if (trimmed === '') return null;
@@ -1163,13 +1326,48 @@ function rateLimitResetReason(value) {
   if (Number.isFinite(numeric) && numeric >= 1_000_000_000_000) resetAt = numeric;
   else if (Number.isFinite(numeric) && numeric >= 1_000_000_000) resetAt = numeric * 1000;
   else resetAt = Date.parse(trimmed);
-  return Number.isFinite(resetAt) && resetAt > Date.now()
+  return Number.isFinite(resetAt) && resetAt > nowMs()
     ? `rate-limit reset at ${new Date(resetAt).toISOString()}`
     : '';
 }
 
+function extractStructuredError(bodyText) {
+  try {
+    const parsed = JSON.parse(bodyText);
+    const values = [];
+    const fields = ['message', 'detail', 'error_description', 'code', 'type', 'reason'];
+    const collect = (value) => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return;
+      for (const field of fields) {
+        const candidate = value[field];
+        if (typeof candidate === 'string' || typeof candidate === 'number') {
+          values.push(String(candidate).slice(0, 2_000));
+        }
+      }
+    };
+    collect(parsed);
+    collect(parsed?.error);
+    collect(parsed?.error?.details);
+    return { normalized: values.join(' ').toLowerCase(), structured: true };
+  } catch {
+    return { normalized: bodyText.slice(0, ERROR_BODY_MAX_BYTES).toLowerCase(), structured: false };
+  }
+}
+
+function quotaWindow(kind, cooldownMs, retryAfterMs, resetMs) {
+  return {
+    kind,
+    resetAt: nowMs() + cooldownMs,
+    source: retryAfterMs !== null
+      ? 'retry-after'
+      : resetMs !== null
+        ? 'x-ratelimit-reset'
+        : 'policy',
+  };
+}
+
 function classifyFailure(status, bodyText, retryAfterHeader, rateLimitResetHeader, capability = '*') {
-  const normalized = bodyText.toLowerCase();
+  const { normalized } = extractStructuredError(bodyText);
   const retryAfterMs = parseRetryAfter(retryAfterHeader);
   const retryReason = retryAfterReason(retryAfterHeader);
   const resetMs = parseRateLimitReset(rateLimitResetHeader);
@@ -1177,17 +1375,19 @@ function classifyFailure(status, bodyText, retryAfterHeader, rateLimitResetHeade
   const quotaCooldownMs = retryAfterMs || resetMs;
   const quotaReason = retryReason || resetReason;
   if (status === 429) {
-    if (/engine (?:is )?currently overloaded|engine overloaded/.test(normalized)) {
+    if (/engine (?:is )?currently overloaded|engine overloaded|engine_overloaded|overloaded_error/.test(normalized)) {
       return { scope: 'provider', cooldownMs: retryAfterMs || 5_000, reason: 'Kimi engine overloaded (429)', rotate: false };
     }
-    if (/too many (?:concurrent )?requests|concurren/.test(normalized)) {
+    if (/too many (?:concurrent )?requests|concurren|concurrency_limit/.test(normalized)) {
       return { scope: 'account', cooldownMs: retryAfterMs || 5_000, reason: 'account concurrency limit (429)', rotate: true };
     }
     if (/monthly|billing cycle/.test(normalized)) {
-      return { scope: 'account', cooldownMs: quotaCooldownMs || COOLDOWN_MONTHLY, reason: `monthly quota exhausted (429${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true };
+      const cooldownMs = quotaCooldownMs || COOLDOWN_MONTHLY;
+      return { scope: 'account', cooldownMs, reason: `monthly quota exhausted (429${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true, quotaWindow: quotaWindow('monthly', cooldownMs, retryAfterMs, resetMs) };
     }
     if (/week/.test(normalized)) {
-      return { scope: 'account', cooldownMs: quotaCooldownMs || COOLDOWN_WEEKLY, reason: `weekly plan limit (429${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true };
+      const cooldownMs = quotaCooldownMs || COOLDOWN_WEEKLY;
+      return { scope: 'account', cooldownMs, reason: `weekly plan limit (429${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true, quotaWindow: quotaWindow('weekly', cooldownMs, retryAfterMs, resetMs) };
     }
     if (/usage limit for this period|5[ -]?hour|five[ -]?hour/.test(normalized)) {
       return {
@@ -1195,6 +1395,7 @@ function classifyFailure(status, bodyText, retryAfterHeader, rateLimitResetHeade
         cooldownMs: quotaCooldownMs || COOLDOWN_5H,
         reason: `5-hour rolling usage limit (429; ${quotaReason || 'timer 5h'})`,
         rotate: true,
+        quotaWindow: quotaWindow('five-hour', quotaCooldownMs || COOLDOWN_5H, retryAfterMs, resetMs),
         probeAfterCooldown: true,
       };
     }
@@ -1206,7 +1407,8 @@ function classifyFailure(status, bodyText, retryAfterHeader, rateLimitResetHeade
     };
   }
   if (status === 403 && /usage limit|billing cycle|weekly|quota.*exhaust/.test(normalized)) {
-    return { scope: 'account', cooldownMs: quotaCooldownMs || COOLDOWN_WEEKLY, reason: `billing-cycle quota exhausted (403${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true };
+    const cooldownMs = quotaCooldownMs || COOLDOWN_WEEKLY;
+    return { scope: 'account', cooldownMs, reason: `billing-cycle quota exhausted (403${quotaReason ? `; ${quotaReason}` : ''})`, rotate: true, quotaWindow: quotaWindow('billing-cycle', cooldownMs, retryAfterMs, resetMs) };
   }
   if (status === 403 && /access terminated/.test(normalized)) {
     return { scope: 'account', cooldownMs: 100 * 365 * DAY, reason: 'account access terminated (403)', rotate: true, recoverable: false };
@@ -1289,9 +1491,7 @@ function buildUpstreamHeaders(req, k) {
   // Kimi's OpenAI-compatible endpoint reads Authorization, while its
   // Anthropic-compatible coding endpoint reads x-api-key. Replace both so a
   // single router can safely serve either client protocol.
-  headers['authorization'] = `Bearer ${k.raw}`;
-  headers['x-api-key'] = k.raw;
-  return headers;
+  return applyProviderAuthentication(headers, PROVIDER_ADAPTER, k.raw);
 }
 
 const httpAgent = new http.Agent({ keepAlive: true });
@@ -1539,9 +1739,9 @@ async function handleProxy(req, res) {
     const attemptId = nextAttemptId++;
     k.activeAttemptIds.add(attemptId);
     k.inFlight = k.activeAttemptIds.size;
-    k.lastAttemptAt = Date.now();
+    k.lastAttemptAt = nowMs();
     saveState();
-    const attemptStartedAt = Date.now();
+    const attemptStartedAt = nowMs();
 
     let upstream;
     try {
@@ -1558,7 +1758,7 @@ async function handleProxy(req, res) {
         scope: 'account', cooldownMs: COOLDOWN_TRANSIENT,
         reason: `network error: ${message}`, rotate: true, ambiguousReplay: true,
       };
-      recordFailure(k, failure, attemptId, 0, Date.now() - attemptStartedAt, capability);
+      recordFailure(k, failure, attemptId, 0, nowMs() - attemptStartedAt, capability);
       releaseAttempt(k, attemptId, err instanceof Error ? err : new Error(message));
       lastFailure = { status: 502, body: JSON.stringify({ error: { message: `upstream network error: ${message}` } }) };
       if (!requestAllowsAmbiguousReplay(req)) {
@@ -1573,7 +1773,7 @@ async function handleProxy(req, res) {
     }
 
     const status = typeof upstream.statusCode === 'number' ? upstream.statusCode : 0;
-    const latencyMs = Date.now() - attemptStartedAt;
+    const latencyMs = nowMs() - attemptStartedAt;
 
     if (status < 400) {
       recordSuccess(k, attemptId, capability, status, latencyMs, upstream.headers);
@@ -1585,7 +1785,7 @@ async function handleProxy(req, res) {
       updateRateLimit(k, upstream.headers);
       const { text, truncated } = await readAllBounded(upstream);
       const retryAfter = firstHeaderValue(upstream.headers['retry-after']);
-      const rateLimitReset = firstHeaderValue(upstream.headers['x-ratelimit-reset']);
+      const rateLimitReset = rateLimitResetHeader(upstream.headers);
       const cls = classifyFailure(status, text, retryAfter, rateLimitReset, capability);
       if (cls.scope === 'request' || cls.scope === 'provider' || !cls.rotate) {
         if (cls.scope === 'provider') applyFailure(k, { ...cls, status, capability });
@@ -1616,18 +1816,18 @@ async function handleProxy(req, res) {
   // Every key is cooling down. Surface the last upstream error with a
   // retry-after pointing at the soonest key recovery.
   const recoveries = keys.map((k) => {
-    if (k.nextRecoveryProbeAt > Date.now()) {
+    if (k.nextRecoveryProbeAt > nowMs()) {
       return Math.min(k.cooldownUntil, k.nextRecoveryProbeAt);
     }
     return k.cooldownUntil;
-  }).filter((timestamp) => timestamp > Date.now());
-  if (providerCooldownUntil > Date.now()) recoveries.push(providerCooldownUntil);
-  const soonest = recoveries.length > 0 ? Math.min(...recoveries) : Date.now() + 1_000;
-  const retryAfterSec = Math.max(1, Math.ceil((soonest - Date.now()) / 1000));
-  const status = lastFailure !== null ? lastFailure.status : providerCooldownUntil > Date.now() ? 503 : 429;
+  }).filter((timestamp) => timestamp > nowMs());
+  if (providerCooldownUntil > nowMs()) recoveries.push(providerCooldownUntil);
+  const soonest = recoveries.length > 0 ? Math.min(...recoveries) : nowMs() + 1_000;
+  const retryAfterSec = Math.max(1, Math.ceil((soonest - nowMs()) / 1000));
+  const status = lastFailure !== null ? lastFailure.status : providerCooldownUntil > nowMs() ? 503 : 429;
   const payload = lastFailure !== null
     ? lastFailure.body
-    : JSON.stringify({ error: { message: providerCooldownUntil > Date.now() ? providerCooldownReason : 'all compatible Kimi keys are cooling down' } });
+    : JSON.stringify({ error: { message: providerCooldownUntil > nowMs() ? providerCooldownReason : 'all compatible Kimi keys are cooling down' } });
   res.writeHead(status, {
     'content-type': 'application/json',
     'retry-after': String(retryAfterSec),
@@ -1670,7 +1870,7 @@ function keyHealth(k, now) {
 }
 
 function handleStatus(res) {
-  const now = Date.now();
+  const now = nowMs();
   clearExpiredPreference(now);
   let activeIndex = keys.findIndex((k) => k.recoveryProbeInFlight);
   if (activeIndex === -1) {
@@ -1694,6 +1894,7 @@ function handleStatus(res) {
     )
     .reduce((soonest, k) => Math.min(soonest, k.nextRecoveryProbeAt), Infinity);
   const payload = {
+    provider: publicProviderMetadata(PROVIDER_ADAPTER),
     upstream: UPSTREAM,
     now: new Date(now).toISOString(),
     summary: {
@@ -1775,6 +1976,11 @@ function handleStatus(res) {
       latencyEwmaMs: k.latencyEwmaMs,
       ttfbEwmaMs: k.latencyEwmaMs,
       rateLimit: k.rateLimit,
+      quotaWindow: k.quotaWindow === null ? null : {
+        kind: k.quotaWindow.kind,
+        resetAt: isoOrNull(k.quotaWindow.resetAt),
+        source: k.quotaWindow.source,
+      },
       capabilityCooldowns: Object.fromEntries(
         Object.entries(k.capabilityCooldowns)
           .filter(([, circuit]) => circuit.until > now)
@@ -1837,7 +2043,7 @@ async function handlePreference(req, res) {
     ? Math.min(requestedTtl, DAY)
     : PREFERENCE_TTL;
   preferredLabel = keys[index].label;
-  preferredUntil = Date.now() + ttlMs;
+  preferredUntil = nowMs() + ttlMs;
   rrPointer = index;
   lastSelectionReason = 'temporary operator preference';
   saveState();
@@ -1919,6 +2125,7 @@ const server = http.createServer(async (req, res) => {
       for (const k of keys) {
         k.cooldownUntil = 0;
         k.cooldownReason = '';
+        k.quotaWindow = null;
         k.credentialCooldownUntil = 0;
         k.credentialCooldownReason = '';
         k.consecutiveFailures = 0;
@@ -1967,8 +2174,6 @@ const server = http.createServer(async (req, res) => {
 // Long streaming completions must not be cut off by server-level timeouts.
 server.requestTimeout = 0;
 
-loadState();
-
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 if (!LOOPBACK_HOSTS.has(HOST) && process.env.KIMI_ROUTER_ALLOW_REMOTE !== '1') {
   console.error(
@@ -1976,6 +2181,16 @@ if (!LOOPBACK_HOSTS.has(HOST) && process.env.KIMI_ROUTER_ALLOW_REMOTE !== '1') {
     'your paid Kimi quota to the network. Set KIMI_ROUTER_ALLOW_REMOTE=1 only behind a ' +
     'separately authenticated and encrypted gateway.'
   );
+  process.exit(1);
+}
+
+try {
+  acquireStateLock();
+  process.on('exit', releaseStateLock);
+  loadState();
+} catch (err) {
+  console.error(`Could not initialize router state: ${err instanceof Error ? err.message : String(err)}`);
+  releaseStateLock();
   process.exit(1);
 }
 
@@ -1997,6 +2212,9 @@ server.listen(PORT, HOST, () => {
   log(`pool: ${keys.map((k) => k.label).join(', ')}`);
   log('router configuration', {
     strategy: 'adaptive-health-v3',
+    providerProfile: PROVIDER_ADAPTER.id,
+    providerProtocol: PROVIDER_ADAPTER.protocol,
+    stateSchemaVersion: STATE_SCHEMA_VERSION,
     keySource: configuredKeySourcePath() === ACCOUNTS_FILE ? 'keychain' : 'file-or-environment',
     maxInFlightPerKey: MAX_INFLIGHT_PER_KEY,
     queueLimit: MAX_QUEUE_DEPTH,

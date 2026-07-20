@@ -27,7 +27,10 @@ const installerPassed = /randomBytes\(32\)/.test(installer) &&
   /rollbackDir/.test(installer) &&
   /127\.0\.0\.1:8787\/healthz/.test(installer) &&
   /installedSecretStore/.test(installer) &&
-  /secret-store\.mjs/.test(installer);
+  /secret-store\.mjs/.test(installer) &&
+  /installedProviderAdapters/.test(installer) &&
+  /provider-adapters\.mjs/.test(installer) &&
+  /KIMI_PROVIDER_PROFILE/.test(installer);
 console.log(`  ${installerPassed ? 'PASS' : 'FAIL'}  installer creates a permission-restricted management credential`);
 if (!installerPassed) failures += 1;
 

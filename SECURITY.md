@@ -1,5 +1,8 @@
 # Security policy
 
+See [the threat model](docs/THREAT-MODEL.md) for assets, trust boundaries,
+defenses, and residual risks.
+
 ## Reporting
 
 Do not open a public issue containing credentials, account identifiers, prompt
