@@ -22,7 +22,12 @@ for (const [name, pattern] of expectations) {
 }
 const installerPassed = /randomBytes\(32\)/.test(installer) &&
   /KIMI_MANAGEMENT_TOKEN_FILE/.test(installer) &&
-  /chmodSync\(managementHeaderFile, 0o600\)/.test(installer);
+  /chmodSync\(managementHeaderFile, 0o600\)/.test(installer) &&
+  /restoreInstalledFiles/.test(installer) &&
+  /rollbackDir/.test(installer) &&
+  /127\.0\.0\.1:8787\/healthz/.test(installer) &&
+  /installedSecretStore/.test(installer) &&
+  /secret-store\.mjs/.test(installer);
 console.log(`  ${installerPassed ? 'PASS' : 'FAIL'}  installer creates a permission-restricted management credential`);
 if (!installerPassed) failures += 1;
 

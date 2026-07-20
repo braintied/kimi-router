@@ -9,8 +9,10 @@ passed local acceptance checks.
 4. Generate and permission-check the management bearer header without printing it.
 5. Start the candidate router on a parallel loopback port with isolated state.
 6. Exercise health, classification, selection, recovery, and streaming tests.
-7. Drain the existing service before activating the candidate.
-8. Verify existing proxy-launched sessions, new sessions, status, and rollback.
+7. Persist rollback copies of the installed router and launcher.
+8. Gracefully drain the existing service before activating the candidate.
+9. Require the candidate to pass loopback health checks; automatically restore the previous files and plist if it does not.
+10. Verify existing proxy-launched sessions, new sessions, status, and rollback.
 
 Terminals started with the stable local proxy can receive credential changes
 without restarting. Terminals configured directly for Kimi, or started before

@@ -16,7 +16,10 @@ The target domain model deliberately separates:
 - **Route**: a provider profile, endpoint family, model, account, and credential.
 - **QuotaWindow**: a five-hour, monthly, or provider-reported reset window.
 
-Credential material stays in the secret store. Persistent router state contains
+Credential material stays behind the OS secret-store interface. The current
+backends are macOS Keychain and Linux Secret Service (`secret-tool`); unsupported
+platforms fail closed rather than falling back to plaintext. Persistent router
+state contains
 only one-way identifiers, counters, timestamps, circuit reasons, and rate-limit
 telemetry.
 

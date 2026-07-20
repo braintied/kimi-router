@@ -14,3 +14,5 @@ Versioning once the public API reaches `1.0.0`.
 - Add installer-generated management bearer authentication and launcher support.
 - Align Claude Code launcher defaults with Kimi K3 compatibility guidance.
 - Persist quota health by stable account identity and isolate credential-rejection circuits.
+- Add a tested cross-platform secret-store interface for macOS Keychain and Linux Secret Service.
+- Add graceful activation, persistent file backups, health verification, and automatic service rollback.

@@ -5,7 +5,9 @@ Claude Code. It keeps labelled personal accounts in a health-aware pool and
 retries an eligible request on another account when Kimi reports an
 account-specific quota or capability failure.
 
-The router is zero-dependency Node.js code. It supports Kimi's Anthropic- and
+The router is zero-dependency Node.js code. OS secret access is isolated behind
+a portable interface with macOS Keychain and Linux Secret Service backends. It
+supports Kimi's Anthropic- and
 OpenAI-compatible endpoints and preserves long-lived SSE streams with raw
 `node:http`/`node:https` transport.
 
@@ -197,6 +199,7 @@ reloads the previous plist if the new launchd bootstrap fails.
 |---|---|
 | `KIMI_ACCOUNTS_FILE` | `~/.kimi-key-accounts` |
 | `KIMI_KEYCHAIN_SERVICE` | `ai.ora.kimi-key-router` |
+| `KIMI_SECRET_BACKEND` | `auto` (macOS Keychain or Linux Secret Service) |
 | `KIMI_BASE_URL` | `https://api.moonshot.ai` (installed service uses `https://api.kimi.com`) |
 | `KIMI_ROUTER_STATE` | `~/.kimi-key-router-state.json` |
 | `KIMI_LOG_FILE` | `~/.local/state/kimi-router/router.jsonl` |

@@ -20,7 +20,8 @@
  * Config (env):
  *   KIMI_API_KEYS       comma-separated keys (testing only; visible in env)
  *   KIMI_ACCOUNTS_FILE  Keychain account labels (default ~/.kimi-key-accounts)
- *   KIMI_KEYCHAIN_SERVICE Keychain service (default ai.ora.kimi-key-router)
+ *   KIMI_KEYCHAIN_SERVICE secret-store service (default ai.ora.kimi-key-router)
+ *   KIMI_SECRET_BACKEND  auto, macos-keychain, or linux-secret-service
  *   KIMI_KEYS_FILE      explicit legacy/test key file (overrides Keychain)
  *   KIMI_BASE_URL       upstream base (default https://api.moonshot.ai)
  *   KIMI_ROUTER_STATE   state file path (default ~/.kimi-key-router-state.json)
@@ -58,8 +59,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream';
+import { createSecretStore } from './secret-store.mjs';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -107,6 +108,7 @@ const ACCOUNTS_FILE = envString(
 );
 const LEGACY_KEYS_FILE = path.join(os.homedir(), '.kimi-keys');
 const KEYCHAIN_SERVICE = envString('KIMI_KEYCHAIN_SERVICE', 'ai.ora.kimi-key-router');
+const SECRET_BACKEND = envString('KIMI_SECRET_BACKEND', 'auto');
 const LOG_FILE = envString(
   'KIMI_LOG_FILE',
   path.join(os.homedir(), '.local', 'state', 'kimi-router', 'router.jsonl')
@@ -236,22 +238,16 @@ function readLegacyKeyFile(keyFile) {
   return entries;
 }
 
-function keychainSecret(label) {
-  if (process.platform !== 'darwin') {
-    throw new Error('macOS Keychain key source is only available on macOS');
+let osSecretStore = null;
+
+function configuredSecretStore() {
+  if (osSecretStore === null) {
+    osSecretStore = createSecretStore({
+      backend: SECRET_BACKEND,
+      service: KEYCHAIN_SERVICE,
+    });
   }
-  const result = spawnSync(
-    '/usr/bin/security',
-    ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', label, '-w'],
-    { encoding: 'utf8', maxBuffer: 1024 * 1024 }
-  );
-  if (result.status !== 0) {
-    const detail = (result.stderr || '').trim().slice(0, 300);
-    throw new Error(`Keychain has no readable secret for ${label}${detail === '' ? '' : `: ${detail}`}`);
-  }
-  const raw = result.stdout.trim();
-  if (raw === '') throw new Error(`Keychain returned an empty secret for ${label}`);
-  return raw;
+  return osSecretStore;
 }
 
 function readKeychainAccounts(accountsFile) {
@@ -262,7 +258,8 @@ function readKeychainAccounts(accountsFile) {
     .filter((line) => line !== '' && !line.startsWith('#'))
     .map((line) => sanitizeLabel(line.replace(/^label\s*=\s*/i, '')))
     .filter((label) => label !== '');
-  return labels.map((label) => ({ raw: keychainSecret(label), label, source: 'keychain' }));
+  const store = configuredSecretStore();
+  return labels.map((label) => ({ raw: store.read(label), label, source: store.source }));
 }
 
 function configuredKeySourcePath() {
