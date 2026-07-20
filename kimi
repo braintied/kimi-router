@@ -1,0 +1,229 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+readonly router_url="http://127.0.0.1:8787"
+readonly router_service="ai.ora.kimi-key-router"
+readonly management_header_file="${KIMI_MANAGEMENT_HEADER_FILE:-$HOME/.config/kimi-router/management.header}"
+
+show_usage() {
+  cat <<'EOF'
+Usage:
+  kimi                 Start Claude Code using routed Kimi K3 (256K context)
+  kimi --1m [ARGS...]  Start using routed Kimi K3 with 1M context (Allegretto+)
+  kimi --status        Show a readable labelled key-pool summary
+  kimi --status-json   Show the complete router status as JSON
+  kimi --prefer NAME   Prefer an account temporarily (automatic failover remains)
+  kimi --auto          Clear preference and return to fully automatic routing
+  kimi --reload        Hot-reload Keychain labels without interrupting sessions
+  kimi --restart       Gracefully drain and restart the local key router
+  kimi --doctor        Check launcher, service, Keychain source, and pool health
+  kimi --logs          Show the latest structured router events
+
+All other arguments are passed to Claude Code.
+EOF
+}
+
+router_curl() {
+  if [[ -r "$management_header_file" ]]; then
+    command curl -H @"$management_header_file" "$@"
+  else
+    command curl "$@"
+  fi
+}
+
+wait_for_router() {
+  local max_attempts="${1:-30}"
+  local attempt=1
+  while (( attempt <= max_attempts )); do
+    if curl -fsS --max-time 1 "$router_url/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+case "${1:-}" in
+  --status)
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    router_curl -fsS "$router_url/status" | jq -r '
+      def duration($ms):
+        (($ms // 0) / 60000 | ceil) as $minutes |
+        if $minutes >= 60 then
+          "\(($minutes / 60 | floor))h \($minutes % 60)m"
+        elif $minutes > 0 then
+          "\($minutes)m"
+        else
+          "<1m"
+        end;
+      "Kimi router — \(.summary.available)/\(.summary.total) keys available",
+      "Upstream: \(.upstream)",
+      "Strategy: \(.summary.strategy)",
+      "Active: \(.summary.activeLabel // "none") — \(.summary.selectionReason)",
+      "Load: \(.summary.inFlight) upstream / \(.summary.activeRequests) client requests; queue \(.summary.queueDepth)/\(.summary.queueLimit)",
+      (if .summary.preferredLabel then
+        "Preference: \(.summary.preferredLabel) until \(.summary.preferredUntil)"
+       else "Preference: automatic" end),
+      "",
+      (.keys[] |
+        if .recoveryProbeInFlight then
+          "↻ \(.label) — testing recovery now"
+        elif .active then
+          "● \(.label) — \(.health), active · \(.inFlight) in flight · \(.completed)/\(.accepted) completed · \(.fails) failed"
+        elif .available then
+          "○ \(.label) — \(.health), ready · \(.inFlight) in flight · \(.completed)/\(.accepted) completed · \(.fails) failed"
+        elif .recoveryDue then
+          "↻ \(.label) — recovery check due; next real request will test it — \(.cooldownReason)"
+        elif .recoveryRequired and .nextRecoveryProbeAt then
+          "× \(.label) — \(.health); quota timer \(duration(.nextRecoveryInMs)) remaining; serialized retry at \(.nextRecoveryProbeAt) — \(.cooldownReason)"
+        elif .nextRecoveryProbeAt then
+          "× \(.label) — \(.health); automatic recheck in \(duration(.nextRecoveryInMs)) at \(.nextRecoveryProbeAt) (backoff \(.recoveryProbeBackoffMs / 60000 | floor)m) — \(.cooldownReason)"
+        else
+          "× \(.label) — \(.health); \(duration(.cooldownRemainingMs)) remaining until \(.cooldownUntil) — \(.cooldownReason)"
+        end
+      )'
+    exit 0
+    ;;
+  --status-json)
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    router_curl -fsS "$router_url/status" | jq .
+    exit 0
+    ;;
+  --prefer)
+    if [[ -z "${2:-}" ]]; then
+      print -u2 'Usage: kimi --prefer ACCOUNT_LABEL'
+      exit 2
+    fi
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    preference_payload="$(jq -cn --arg label "$2" '{label:$label}')"
+    router_curl -fsS \
+      -H 'content-type: application/json' \
+      --data-binary "$preference_payload" \
+      "$router_url/prefer" | jq -r '"Preferred \(.preferredLabel) until \(.preferredUntil). Automatic failover remains enabled."'
+    exit 0
+    ;;
+  --auto)
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    router_curl -fsS \
+      -H 'content-type: application/json' \
+      --data-binary '{"label":null}' \
+      "$router_url/prefer" >/dev/null
+    printf 'Kimi router returned to fully automatic selection.\n'
+    exit 0
+    ;;
+  --reload)
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    router_curl -fsS -X POST "$router_url/reload" | jq .
+    exit 0
+    ;;
+  --restart)
+    service_pid="$(launchctl print "gui/$(id -u)/$router_service" 2>/dev/null | awk '/^[[:space:]]*pid = / { print $3; exit }')"
+    if [[ -n "$service_pid" ]]; then
+      kill -TERM "$service_pid"
+    else
+      launchctl kickstart "gui/$(id -u)/$router_service"
+    fi
+    if wait_for_router 1200; then
+      printf 'Kimi key router restarted.\n'
+    else
+      print -u2 'Kimi key router did not become healthy.'
+      exit 1
+    fi
+    exit 0
+    ;;
+  --doctor)
+    doctor_failures=0
+    for dependency in node claude curl jq; do
+      if ! command -v "$dependency" >/dev/null 2>&1; then
+        print -u2 "missing dependency: $dependency"
+        doctor_failures=$((doctor_failures + 1))
+      fi
+    done
+    if ! launchctl print "gui/$(id -u)/$router_service" >/dev/null 2>&1; then
+      print -u2 "launchd service is not loaded: $router_service"
+      doctor_failures=$((doctor_failures + 1))
+    fi
+    if ! wait_for_router; then
+      print -u2 'router health check failed'
+      doctor_failures=$((doctor_failures + 1))
+    else
+      doctor_json="$(router_curl -fsS "$router_url/status")"
+      print -r -- "$doctor_json" | jq -r '
+        "router: healthy (\(.summary.available)/\(.summary.total) accounts available)",
+        "strategy: \(.summary.strategy)",
+        "sources: \([.keys[].source] | unique | join(", "))",
+        "load: \(.summary.inFlight) upstream, queue \(.summary.queueDepth)/\(.summary.queueLimit)"'
+      if ! print -r -- "$doctor_json" | jq -e '[.keys[].source] | all(. == "keychain")' >/dev/null; then
+        print -u2 'warning: one or more secrets are not loaded from Keychain'
+        doctor_failures=$((doctor_failures + 1))
+      fi
+    fi
+    if (( doctor_failures > 0 )); then
+      print -u2 "doctor found $doctor_failures problem(s)"
+      exit 1
+    fi
+    printf 'doctor: all checks passed\n'
+    exit 0
+    ;;
+  --logs)
+    tail -n 100 "$HOME/.local/state/kimi-router/router.jsonl"
+    exit 0
+    ;;
+  --help|-h)
+    show_usage
+    exit 0
+    ;;
+esac
+
+kimi_model="${KIMI_MODEL:-k3}"
+kimi_context_tokens="${KIMI_CONTEXT_TOKENS:-262144}"
+
+if [[ "${1:-}" == "--1m" ]]; then
+  kimi_model="k3[1m]"
+  kimi_context_tokens="1048576"
+  shift
+fi
+
+if ! wait_for_router; then
+  launchctl kickstart "gui/$(id -u)/$router_service" >/dev/null 2>&1 || true
+fi
+
+if ! wait_for_router; then
+  print -u2 'Kimi key router is unavailable. Run `kimi --restart` and inspect /tmp/kimi-key-router.err.log.'
+  exit 1
+fi
+
+export ANTHROPIC_BASE_URL="$router_url/coding/"
+export ANTHROPIC_AUTH_TOKEN="routed-locally"
+unset ANTHROPIC_API_KEY
+
+export ANTHROPIC_MODEL="$kimi_model"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="$kimi_model"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$kimi_model"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$kimi_model"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$kimi_model"
+export CLAUDE_CODE_SUBAGENT_MODEL="$kimi_model"
+
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$kimi_context_tokens"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$kimi_context_tokens"
+export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-max}"
+export ENABLE_TOOL_SEARCH="${ENABLE_TOOL_SEARCH:-false}"
+
+exec claude "$@"

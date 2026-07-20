@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+releases/
+*.tgz
+*.log
+.DS_Store
+.env
+.env.*
+.kimi-keys
+.kimi-key-accounts
+.kimi-key-router-state.json
+router.jsonl*
+launchd.out.log
+launchd.err.log

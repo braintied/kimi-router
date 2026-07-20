@@ -1,0 +1,56 @@
+{
+  "name": "@braintied/kimi-router",
+  "version": "0.1.0",
+  "description": "Local, health-aware Kimi credential router and Claude Code launcher",
+  "type": "module",
+  "bin": {
+    "kimi-router": "./router.mjs",
+    "kimi-claude": "./kimi",
+    "kimi-router-install": "./install.mjs",
+    "kimi-router-migrate": "./migrate-keychain.mjs"
+  },
+  "files": [
+    "router.mjs",
+    "kimi",
+    "install.mjs",
+    "migrate-keychain.mjs",
+    "keychain-write.swift",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "docs"
+  ],
+  "scripts": {
+    "check": "node --check router.mjs && node --check install.mjs && node --check migrate-keychain.mjs && zsh -n kimi",
+    "test": "node router.test.mjs && node router.v3.test.mjs && node launcher.test.mjs",
+    "secrets:check": "node scripts/check-secrets.mjs",
+    "artifact:check": "node scripts/inspect-package.mjs",
+    "gate": "npm run check && npm test && npm run secrets:check",
+    "prepublishOnly": "npm run gate && npm run artifact:check"
+  },
+  "keywords": [
+    "kimi",
+    "kimi-code",
+    "claude-code",
+    "llm-gateway",
+    "api-key-rotation",
+    "quota-routing"
+  ],
+  "author": "Braintied",
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/braintied/kimi-router.git"
+  },
+  "homepage": "https://github.com/braintied/kimi-router#readme",
+  "bugs": {
+    "url": "https://github.com/braintied/kimi-router/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
