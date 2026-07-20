@@ -89,7 +89,11 @@ const mock = http.createServer((req, res) => {
       const reject = () => {
         res.writeHead(429, {
           'content-type': 'application/json',
-          ...(body.includes('five-hour-retry-after') ? { 'retry-after': '1' } : {}),
+          ...(body.includes('persist-five-hour')
+            ? { 'retry-after': '5' }
+            : body.includes('five-hour-retry-after')
+              ? { 'retry-after': '1' }
+              : {}),
         });
         res.end(JSON.stringify({ error: { message: 'You have reached your 5 hour rate limit' } }));
       };
