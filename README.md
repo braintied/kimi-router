@@ -251,7 +251,9 @@ xcrun swiftc -typecheck keychain-write.swift
 
 Release builds refuse dirty tracked trees, derive timestamps from the source
 commit, and emit a tarball plus `.sha256` and `.provenance.json` files. CI builds
-the tarball twice and requires byte-for-byte equality.
+the tarball twice and requires byte-for-byte equality. Portable CI and package
+publication use Ubuntu; the Keychain helper and full macOS path have a separate
+manually dispatched macOS validation workflow.
 
 The v3 suite covers official error scopes, no-spray provider/request failures,
 model circuits, unknown-403 safety, ambiguous replay suppression, exact reset

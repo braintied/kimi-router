@@ -17,3 +17,4 @@ Versioning once the public API reaches `1.0.0`.
 - Add a tested cross-platform secret-store interface for macOS Keychain and Linux Secret Service.
 - Add graceful activation, persistent file backups, health verification, and automatic service rollback.
 - Add reproducible release tarballs with SHA-256 checksums and commit-bound provenance.
+- Separate portable Ubuntu CI/publication from manually dispatched macOS validation.
