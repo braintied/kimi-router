@@ -79,6 +79,12 @@ account names.
 is created only for a classified five-hour usage error. Concurrency and engine
 overload use short transient/provider circuits instead.
 
+The recovery maximum applies only when Kimi gave no authoritative reset time
+and the router is operating from a conservative policy cooldown. The router
+generates no synthetic traffic: the first real request after the deadline
+performs a globally serialized probe. An explicit `Retry-After`, a rate-limit
+reset header, or the strict five-hour timer is never shortened by this setting.
+
 ## Launcher environment
 
 `kimi` sets the local base URL, a non-secret local placeholder token, every

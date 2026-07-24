@@ -37,6 +37,14 @@ The router never spends quota on synthetic probes. When a conservative recovery
 deadline arrives, one real client request probes the account and concurrent
 requests wait or use another healthy account.
 
+When `quotaWindow.source` is `policy`, ordinary recovery checks use bounded
+backoff. A Console percentage can still coexist with a denial on another quota
+meter because Kimi applies rolling five-hour, weekly Kimi Code, and shared
+monthly membership limits independently. `Weekly usage: 100%` means the weekly
+quota is exhausted; a lower `Rate limit details` percentage does not override
+it. Use the Kimi Code Console or the official CLI `/usage` view to inspect every
+meter; the API-key endpoint does not publish a documented balance/status method.
+
 ## Five-hour, weekly, or monthly timer looks wrong
 
 Kimi distinguishes engine overload, concurrency, five-hour usage, weekly billing

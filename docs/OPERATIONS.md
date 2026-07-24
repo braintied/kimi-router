@@ -58,6 +58,14 @@ If any account is `available`, routing should use it immediately. A status state
 where an exhausted active account coexists with unused eligible capacity is a
 regression and should be reported with redacted state fields and test steps.
 
+Policy-derived quota cooldowns use serialized real-traffic recovery checks with
+bounded backoff. Provider-supplied reset headers and explicit five-hour timers
+remain authoritative. The Console percentage is not a single availability
+signal: Kimi documents separate rolling five-hour, weekly Kimi Code, and shared
+monthly membership limits. A credential is usable only when an actual model
+request is accepted. In the Console, `Weekly usage: 100%` means the weekly quota
+is exhausted even when the separate `Rate limit details` card is below 100%.
+
 ## Incident: provider outage
 
 The triggering request receives the upstream overload/error. During the provider
