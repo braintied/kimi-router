@@ -1,7 +1,7 @@
 {
   "name": "@braintied/kimi-router",
   "version": "1.0.2",
-  "description": "Local, health-aware Kimi credential router and Claude Code launcher",
+  "description": "Loopback proxy that pools Kimi Code membership keys and fails over for Claude Code, OpenCode, and any Anthropic-compatible client",
   "type": "module",
   "bin": {
     "kimi-router": "./bin/kimi-router.mjs",
@@ -16,6 +16,7 @@
     "keychain-write.swift",
     "keychain-relabel.swift",
     "README.md",
+    "AGENTS.md",
     "SECURITY.md",
     "CHANGELOG.md",
     "docs",

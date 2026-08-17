@@ -37,6 +37,7 @@ const FORBIDDEN = [
 const ROOT_FILES = [
   'package.json',
   'README.md',
+  'AGENTS.md',
   'CHANGELOG.md',
   'LICENSE',
   'SECURITY.md',
