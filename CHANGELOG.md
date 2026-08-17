@@ -1,5 +1,108 @@
 # Changelog
 
+## 1.0.2
+
+### Patch Changes
+
+- `kimi --reset` is a launcher command. Status keeps Kimi's own 403 sentence
+  and names Extra Usage when every membership key is billing-cycle 403.
+- Weekly reset walks the console epoch forward 7 days at a time (Aug 1, then
+  Aug 8, 15, 22). A past date is not dead and is not now+7d.
+
+## 1.0.1
+
+### Patch Changes
+
+- Publish source already on main that the registry never received. public surface identical; internal change only.
+
+## 1.0.0
+
+### Major Changes
+
+- 7bb2519: Split the package into a `src/` library and a `bin/` process boundary, so the
+  environment is read in exactly one place.
+
+  Every module shipped from the package root read `process.env` wherever it
+  happened to need a value: `router.mjs` alone resolved 30-odd variables at module
+  scope, spread across the file, interleaved with the request path. That is an
+  undeclared input surface. It works on the machine that happens to have the
+  variables exported and fails silently anywhere else, and it is why the
+  third-party-safety audit reported 24 `no-direct-env` findings against this
+  package — the largest count in the repo after `@braintied/research`.
+
+  `bin/kimi-router.mjs` now reads the environment and the home directory, hands
+  both to `resolveRouterConfig` (`src/config.mjs`), and passes the resulting frozen
+  record to `startRouter`. Every default lives in that one resolver; `src/router.mjs`
+  treats each field as required and never re-derives one, so a value that cannot be
+  resolved fails at startup rather than turning into surprising behavior mid-request.
+  `bin/relabel-accounts.mjs` and `bin/migrate-keychain.mjs` do the same for their
+  CLIs, and `resolveProviderAdapter` no longer defaults its `env` argument to the
+  process.
+
+  Runtime behavior is unchanged: the same variables, the same defaults, the same
+  warnings on `KIMI_API_KEYS` and `KIMI_MANAGEMENT_TOKEN`. The one difference is
+  that the three startup failures which previously printed their own prefix
+  (invalid `PORT`, invalid provider configuration, `KIMI_TEST_CLOCK_FILE` outside
+  `NODE_ENV=test`) now share one `Invalid router configuration:` prefix, because
+  there is now one place that can fail.
+
+  Breaking, hence major:
+
+  - Module paths moved. `router.mjs`, `provider-adapters.mjs`, `secret-store.mjs`
+    and `relabel-accounts.mjs` are now under `src/`; `install.mjs`,
+    `migrate-keychain.mjs` and the `kimi` launcher are under `bin/`. The `bin`
+    entries in the manifest keep their names, so `kimi`, `kimi-router` and the rest
+    are unaffected, but any deep import of a root module path must be updated.
+  - `src/router.mjs` no longer starts a server on import. It exports
+    `startRouter(config)`; importing it does nothing until called.
+  - `run(options, env)` in `src/relabel-accounts.mjs` is now
+    `run(options, { accountsFile, service })`. The caller resolves the target
+    rather than passing an environment for the library to interpret.
+  - The installer copies a tree (`bin/` plus `src/`) into
+    `~/.local/share/kimi-router/` instead of three flat files, and the generated
+    launchd plist points at `bin/kimi-router.mjs`. An existing service keeps
+    running its already-installed copy; the new layout applies on the next
+    `bin/install.mjs --activate`.
+
+  `config.test.mjs` pins both halves of the boundary: that nothing under `src/`
+  reads ambient state, and that every default resolves to the value the router
+  previously read inline.
+
+## 0.1.4
+
+### Patch Changes
+
+- Make three packages publishable again.
+
+  `kimi-router/install.mjs` could not be parsed at all. The launchd plist is built
+  from a template literal, and an XML comment inside it quoted `supervisor audit`
+  and `ps` in backticks, which closed the string and left the prose to be read as
+  code. The publish gate caught it as `SyntaxError: Unexpected identifier
+'supervisor'`. The quotes are now single, so the comment survives the template.
+  Anyone who ran the installer between that comment landing and now got the same
+  parse error, because the file was never valid JavaScript.
+
+  `research` and `onboarding-react` both build content that differs from what is
+  already on the registry under their current version numbers, so the publish gate
+  refuses them: a version that already exists must be byte-identical or the
+  mapping from version to commit is a lie. Neither needs a code change, only a
+  number that has not been used yet.
+
+## 0.1.3
+
+### Patch Changes
+
+- d430d70: Ship a Braintied proprietary LICENSE and correct the license field.
+
+  Sixteen of these packages declared `"license": "MIT"` and the repository
+  contained no LICENSE file at all, while the two highest-value packages were the
+  only ones marked UNLICENSED. MIT permits sublicensing and redistribution and
+  survives termination of any surrounding agreement, so an MIT declaration would
+  have given any recipient a perpetual right to the code regardless of contract.
+
+  All eighteen now declare UNLICENSED and ship the same proprietary LICENSE file.
+  No runtime behaviour changes.
+
 All notable changes are recorded here. This project follows Semantic
 Versioning once the public API reaches `1.0.0`.
 

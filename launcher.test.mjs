@@ -2,8 +2,8 @@
 
 import fs from 'node:fs';
 
-const source = fs.readFileSync(new URL('./kimi', import.meta.url), 'utf8');
-const installer = fs.readFileSync(new URL('./install.mjs', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('./bin/kimi', import.meta.url), 'utf8');
+const installer = fs.readFileSync(new URL('./bin/install.mjs', import.meta.url), 'utf8');
 const expectations = [
   ['local Anthropic gateway', /export ANTHROPIC_BASE_URL="\$router_url\/coding\/"/],
   ['all Claude model aliases', /export ANTHROPIC_DEFAULT_OPUS_MODEL="\$kimi_model"[\s\S]*export ANTHROPIC_DEFAULT_HAIKU_MODEL="\$kimi_model"/],
@@ -11,6 +11,7 @@ const expectations = [
   ['maximum effort default', /export CLAUDE_CODE_EFFORT_LEVEL="\$\{CLAUDE_CODE_EFFORT_LEVEL:-max\}"/],
   ['tool search compatibility default', /export ENABLE_TOOL_SEARCH="\$\{ENABLE_TOOL_SEARCH:-false\}"/],
   ['management header stays out of process arguments', /command curl -H @"\$management_header_file"/],
+  ['operator reset is a launcher command', /kimi --reset\s+Clear every account/],
 ];
 
 let failures = 0;

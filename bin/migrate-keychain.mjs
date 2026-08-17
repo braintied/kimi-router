@@ -13,7 +13,7 @@ const legacyFile = process.env.KIMI_KEYS_FILE || path.join(os.homedir(), '.kimi-
 const accountsFile = process.env.KIMI_ACCOUNTS_FILE || path.join(os.homedir(), '.kimi-key-accounts');
 const deleteLegacy = process.argv.includes('--delete-legacy');
 const dryRun = process.argv.includes('--dry-run');
-const keychainWriter = fileURLToPath(new URL('./keychain-write.swift', import.meta.url));
+const keychainWriter = fileURLToPath(new URL('../keychain-write.swift', import.meta.url));
 
 function fail(message) {
   console.error(message);

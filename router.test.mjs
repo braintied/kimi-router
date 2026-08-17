@@ -124,7 +124,7 @@ const mock = http.createServer((req, res) => {
 
 await new Promise((resolve) => mock.listen(MOCK_PORT, '127.0.0.1', resolve));
 
-const routerPath = new URL('./router.mjs', import.meta.url).pathname;
+const routerPath = new URL('./bin/kimi-router.mjs', import.meta.url).pathname;
 const router = spawn(process.execPath, [routerPath], {
   env: {
     ...process.env,
@@ -417,7 +417,25 @@ check(
     k.health === 'quota-limited' && /billing-cycle quota exhausted/.test(k.cooldownReason)
   )
 );
+check(
+  'billing-cycle 403 keeps the upstream sentence on every key',
+  quotaStatus.keys.every((k) =>
+    typeof k.lastUpstreamMessage === 'string' &&
+    /usage limit for this billing cycle/i.test(k.lastUpstreamMessage)
+  )
+);
+check(
+  'all-keys billing-cycle 403 names Extra Usage as the remaining path',
+  typeof quotaStatus.summary.extraUsageHint === 'string' &&
+    /Extra Usage/.test(quotaStatus.summary.extraUsageHint)
+);
 await fetch(`http://127.0.0.1:${ROUTER_PORT}/reset`, { method: 'POST' });
+const afterResetStatus = await (await fetch(`http://127.0.0.1:${ROUTER_PORT}/status`)).json();
+check(
+  'reset clears upstream message and Extra Usage hint',
+  afterResetStatus.summary.extraUsageHint === null &&
+    afterResetStatus.keys.every((k) => k.lastUpstreamMessage === null)
+);
 
 // 6. non-rotating 4xx passes through untouched (request problem, not key problem)
 const r6 = await post({ hello: 'bad-request-trigger' });

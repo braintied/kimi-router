@@ -21,6 +21,7 @@ eligible membership tier. All remaining arguments pass unchanged to `claude`.
 | `kimi --prefer LABEL` | Temporary preference; automatic failover remains active |
 | `kimi --auto` | Remove the preference and restore automatic selection |
 | `kimi --reload` | Re-read labels and secrets without interrupting accepted streams |
+| `kimi --reset` | Clear every account and provider circuit. Use after a verified Extra Usage top-up, not as a poll |
 | `kimi --restart` | Signal graceful drain and restart the launchd service |
 | `kimi --doctor` | Check dependencies, service, auth, secret source, and pool health |
 | `kimi --logs` | Tail the local structured log |

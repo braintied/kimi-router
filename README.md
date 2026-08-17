@@ -1,107 +1,147 @@
 # @braintied/kimi-router
 
-Kimi Router is a localhost-only, Keychain-backed proxy for using Kimi Code with
-Claude Code. It keeps opaque-labelled operator accounts in a health-aware pool and
-retries an eligible request on another account when Kimi reports an
-account-specific quota or capability failure. Provider adapters keep Kimi Code
-membership, Kimi Open Platform, and custom pass-through contracts explicit; the
-Claude Code launcher uses only the membership adapter.
+Localhost proxy that pools **Kimi Code membership** keys and fails over when
+Kimi rejects one account. Claude Code talks to `127.0.0.1:8787`. The router
+swaps `Authorization` / `x-api-key`, classifies the error, and retries on
+another labelled key when the failure is account-scoped.
 
-The router is zero-dependency Node.js code. OS secret access is isolated behind
-a portable interface with macOS Keychain and Linux Secret Service backends. It
-supports Kimi's Anthropic- and
-OpenAI-compatible endpoints and preserves long-lived SSE streams with raw
-`node:http`/`node:https` transport.
+It is not Open Platform billing, not Grok, not Claude Max, and not
+`ora-model`. Those stay in their own packages and bridges.
 
-## Installed layout
+**Version in this tree:** see `package.json`. **Current registry:** 1.0.1 on
+GitHub Packages. **Current public GitHub Release:** v0.1.1 (2026-07-20) until
+this tree is published. **License:** UNLICENSED. Public visibility is not
+reuse rights.
 
-| Purpose | Path |
-|---|---|
-| Package checkout | the standalone `braintied/kimi-router` repository |
-| Deployed router | `~/.local/share/kimi-router/router.mjs` |
-| Provider adapters | `~/.local/share/kimi-router/provider-adapters.mjs` |
-| Launcher | `~/.local/bin/kimi` |
-| Opaque account-alias file | `~/.kimi-key-accounts` |
-| Persistent health state | `~/.kimi-key-router-state.json` |
-| Structured rotating log | `~/.local/state/kimi-router/router.jsonl` |
-| launchd service | `~/Library/LaunchAgents/ai.ora.kimi-key-router.plist` |
+---
 
-The account file contains opaque aliases such as `team-primary`, never email
-addresses or secrets. Credentials are generic-password items in macOS Keychain
-under service `ai.ora.kimi-key-router`.
+## Install
 
-## What v3 changes
-
-- Uses macOS Keychain instead of a plaintext key file.
-- Labels every account in status, logs, preferences, and diagnostics.
-- Classifies Kimi's documented errors by scope: request, model capability,
-  account, or provider.
-- Does not spray provider overloads or request-specific URL security failures
-  across the key pool.
-- Uses per-key in-flight counts and a configurable concurrency ceiling (24 by
-  default, below Kimi's documented maximum of 30).
-- Queues bounded overflow rather than allocating an unbounded backlog.
-- Serializes real-traffic recovery probes to prevent a thundering herd. When
-  the probe is the pool's only path back to service, concurrent sessions wait
-  for its result and continue automatically if the account recovers.
-- Parks explicit five-hour quota failures behind a persisted timer. An exact
-  upstream `Retry-After` wins; otherwise the timer is five hours. The first
-  request after expiry is serialized as the recovery probe.
-- Resolves contradictory concurrent failures and successes by attempt order.
-  Quota failures quarantine an account immediately; only a newer accepted
-  attempt may reopen it, while already-accepted streams keep running.
-- Keeps separate model circuits, so a `k3[1m]` permission error does not disable
-  standard `k3` for the same account.
-- Hot-reloads labels and Keychain secrets. Removed accounts drain existing
-  streams and stop receiving new work.
-- Gracefully drains streams on SIGTERM/SIGINT.
-- Emits permission-restricted JSONL logs with rotation and bounded error bodies.
-- Persists schema-v2 health metadata through a single-writer lock, fsynced
-  atomic rename, legacy migration, stale-lock recovery, and corruption quarantine.
-- Extracts bounded structured error fields before conservative text fallback and
-  records explicit five-hour/weekly/monthly quota-window kind, reset, and source.
-
-## Request flow
-
-```text
-Claude Code
-    │
-    ▼
-127.0.0.1:8787 ── model + health + load routing ──▶ api.kimi.com
-    │
-    ├─ replaces both Authorization and x-api-key
-    ├─ never logs prompts, tool calls, responses, or secrets
-    ├─ immediately quarantines quota failures from new work
-    ├─ retries explicit account/model denials on another eligible account
-    ├─ suppresses ambiguous POST replay after network/408/5xx failures
-    └─ pipes an accepted SSE response until completion
-```
-
-The router buffers the request body (32 MiB default) because transparent retry
-requires replaying it. It inspects only the JSON `model` field for capability
-routing. Response bodies are streamed without a body timeout. Error bodies that
-must be buffered for classification are capped at 1 MiB.
-
-## Launcher
+Release tarball (no registry login):
 
 ```bash
-kimi                         # Claude Code on Kimi K3
-kimi --1m                    # Kimi K3 1M model where the account allows it
-kimi --status                # readable labelled pool status
-kimi --status-json           # complete diagnostics JSON
-kimi --prefer ACCOUNT        # temporary preference; failover stays enabled
-kimi --auto                  # clear preference
-kimi --reload                # hot-reload Keychain labels
-kimi --restart               # graceful drain and launchd restart
-kimi --doctor                # dependencies, launchd, Keychain source, health
-kimi --logs                  # latest structured events
+npm install --global \
+  https://github.com/braintied/kimi-router/releases/download/v1.0.2/braintied-kimi-router-1.0.2.tgz
 ```
 
-All other arguments are passed to `claude`.
+GitHub Packages needs a classic PAT with `read:packages` even when the package
+is public:
 
-## Account management
+```bash
+npm login --scope=@braintied --auth-type=legacy \
+  --registry=https://npm.pkg.github.com
+npm install --global @braintied/kimi-router@1.0.2
+```
 
-Add or update an account without putting the secret in shell history:
+Then:
+
+```bash
+node "$(npm root -g)/@braintied/kimi-router/bin/install.mjs"
+node "$(npm root -g)/@braintied/kimi-router/bin/install.mjs" --activate
+kimi --doctor
+```
+
+From a git checkout of this package (Braintied operators):
+
+```bash
+npm run gate
+node bin/install.mjs --activate
+kimi --doctor
+```
+
+launchd unit: `ai.ora.kimi-key-router`. Program:
+`~/.local/share/kimi-router/bin/kimi-router.mjs`. Health:
+`http://127.0.0.1:8787/healthz`.
+
+---
+
+## kimi
+
+```bash
+kimi                 # Claude Code on routed K3
+kimi --1m            # K3 1M where the membership allows it
+kimi --status        # pool, last upstream sentence, next weekly reset
+kimi --status-json   # full redacted diagnostics
+kimi --prefer NAME   # temporary preference; failover stays on
+kimi --auto          # drop preference
+kimi --reload        # reread Keychain labels
+kimi --reset         # clear every circuit (after Extra Usage is actually on)
+kimi --restart       # drain + launchd restart
+kimi --doctor        # launchd, Keychain source, health
+kimi --logs          # last structured events
+```
+
+Anything else is passed to `claude`. A running Claude Code process keeps the
+base URL it started with. Switch providers by starting a new process.
+
+`--prefer` is not a pin. A cooling, 401, or capability-blocked preferred
+account is skipped.
+
+`--reset` is for a verified Extra Usage enable or a console top-up. Do not
+poll it. Weekly 403 on every key with Extra Usage off will 403 again after
+reset.
+
+---
+
+## Three Kimi meters, one 403
+
+Kimi Code membership is **not** one balance.
+
+| Meter | What it is | What the API says | What the router does |
+|---|---|---|---|
+| Rolling 5-hour | ~300–1200 requests / 5h | **429** `You've reached your usage limit for this period` | Cool that account for `Retry-After` or 5 hours; try the next key |
+| Weekly billing cycle | 7-day membership quota | **403** `You've reached your usage limit for this billing cycle` | Cool until the next 7-day landing; try the next key |
+| Extra Usage | USD wallet on that **same** Kimi Code membership | If enabled and funded, Kimi consumes it and **does not 403** | Nothing to switch; the request succeeds |
+| Open Platform | `api.moonshot.ai` prepaid | 401 on a membership key | Not this router’s pool |
+
+A Console card that still shows 5-hour remaining can sit next to weekly 100%.
+The router is blocked on weekly in that case.
+
+**$50 Extra Usage that still 403s** means the Extra Usage **toggle is off** on
+that membership, or the $50 is Open Platform. Membership keys cannot read
+Open Platform `GET /v1/users/me/balance` (401). There is no documented
+membership usage API; `/coding/v1/usage` is 404. Console `/usage` is the
+live meter.
+
+---
+
+## Weekly reset clock
+
+Kimi does not send `Retry-After` or `X-RateLimit-Reset` on weekly 403.
+
+Each membership has a phase clock from the Code Console, stored in
+`~/.config/kimi-router/accounts.meta.json` as `weeklyResetEpoch`. Later
+resets are that instant plus **N × 7 days**. A date in the past is not
+dead. It is not `now + 7 days` from the 403.
+
+On **2026-08-17** (Pacific), from the clocks recorded 2026-07-31:
+
+| Account | Epoch (Pacific) | Landings | Next |
+|---|---|---|---|
+| hello@braintied.com | Fri Jul 31, 5:39 PM | Jul 31, Aug 7, Aug 14 | **Fri Aug 21, 5:39 PM PT** |
+| g@braintied.com | Sat Aug 1, 4:26 PM | Aug 1, Aug 8, Aug 15 | **Sat Aug 22, 4:26 PM PT** |
+| galenoakes@gmail.com | Sat Aug 1, 7:10 PM | Aug 1, Aug 8, Aug 15 | **Sat Aug 22, 7:10 PM PT** |
+| nex@braintied.com | Sat Aug 1, 11:17 PM | Aug 1, Aug 8, Aug 15 | **Sat Aug 22, 11:17 PM PT** |
+
+`kimi --status` prints `weekly reset:` in UTC. `nextWeeklyResetAt` in
+`--status-json` is the same instant.
+
+Math lives in `src/weekly-reset.mjs`. Tests in `weekly-reset.test.mjs` pin
+2026-08-17 so Aug 1 + 7 stays Aug 8.
+
+---
+
+## Accounts
+
+Secrets are macOS Keychain items, service `ai.ora.kimi-key-router`. The
+account file is labels only:
+
+```text
+~/.kimi-key-accounts          # one alias per line
+~/.config/kimi-router/accounts.meta.json   # email, owner, weekly epoch
+```
+
+Add a key without putting it in the shell:
 
 ```bash
 security add-generic-password -U \
@@ -110,228 +150,202 @@ security add-generic-password -U \
   -w
 ```
 
-Keep `-w` last with no following argument. macOS prompts for the secret. Then
-add the same opaque alias as its own line in `~/.kimi-key-accounts` and run:
+`-w` last, no value. Then the same alias on its own line in
+`~/.kimi-key-accounts`, then `kimi --reload`.
+
+Do not use an email as the alias on a machine you will screenshot or share.
+This Mac’s pool currently uses mailbox labels (`hello@`, `g@`, …) because
+that is how the four seats were enrolled. Relabel before any public log:
 
 ```bash
-kimi --reload
-kimi --doctor
+kimi-router-relabel --dry-run --alias team-hello --alias team-g --alias team-galen --alias team-nex
 ```
 
-To remove an account, delete its label from `~/.kimi-key-accounts`, reload, and
-then remove the Keychain item:
+`kimi-router-relabel --audit` fails if any Keychain account name still looks
+like an email.
 
-```bash
-security delete-generic-password \
-  -s ai.ora.kimi-key-router \
-  -a team-primary
+---
+
+## Request path
+
+```text
+Claude Code / any Anthropic- or OpenAI-compatible client
+    │
+    ▼
+127.0.0.1:8787/coding/…
+    │  replace Authorization and x-api-key
+    │  inspect JSON `model` only
+    ▼
+api.kimi.com   (membership)
 ```
 
-An in-flight removed account appears as `retiring` until its final stream ends.
-Do not use an email address, username, or other personal identifier as the alias.
+Loopback only. Foreign `Host` / `Origin` → 403. No synthetic probe requests.
+Recovery uses the next real client call. POST is not replayed after 5xx or
+network failure unless `KIMI_RETRY_AMBIGUOUS_REQUESTS=1`.
 
-To replace legacy identifying Keychain account names transactionally, provide
-one safe alias for each current account-file line, in the same order:
+On Fly, this process is a **sidecar on the agent machine**
+(`apps/ora-server/kimi-router-sidecar.sh`), still bound to 127.0.0.1, with
+`KIMI_MEMBERSHIP_KEY_1..4` projected into a tmpfs key file. It is not its
+own Fly app: the package refuses non-loopback bind without
+`KIMI_ROUTER_ALLOW_REMOTE=1`, and that flag is not sanctioned on Fly 6PN.
 
-```bash
-kimi-router-relabel --dry-run \
-  --alias team-primary \
-  --alias team-secondary \
-  --alias personal
-kimi-router-relabel --delete-old \
-  --alias team-primary \
-  --alias team-secondary \
-  --alias personal
-```
-
-The command copies and verifies every credential inside Security.framework,
-atomically swaps the alias file, and only then removes the old Keychain account
-metadata. Source identifiers and secret values are never printed. Run
-`kimi-router-relabel --audit` afterward to report counts only and fail if any
-email-shaped Keychain account metadata remains.
+---
 
 ## Failure policy
 
-| Kimi response | Scope | Router action |
+| Kimi response | Scope | Action |
 |---|---|---|
-| 429 engine overloaded | provider | pass through; do not spray accounts |
-| 429 too many concurrent requests | account/transient | short circuit, try another account |
-| 429 usage limit for this period | account/5-hour | honor `Retry-After` or start a persisted five-hour timer; serialize the first retry |
-| 429 monthly or weekly limit | account | cool for the matching window |
-| 402 unable to verify membership | account/transient | short circuit, try another account |
-| 403 billing-cycle usage limit | account/weekly | cool account, try another account |
-| 403 access terminated | account/blocked | long non-probed circuit |
-| 403 URL security risk | request | pass through; do not rotate |
-| unknown 403 | request | pass through; do not poison account health |
-| 401 model/tier/capability denial | model capability | cool only that model/account pair |
-| 401 invalid credentials | account | invalid-key circuit |
-| other non-retryable 4xx | request | pass through unchanged |
-| 5xx/network/408 | ambiguous | update health; do not replay POST by default |
+| 429 engine overloaded | provider | pass through; do not spray keys |
+| 429 too many concurrent requests | account | short cool; next key |
+| 429 usage limit for this period | account / 5-hour | `Retry-After` or 5h timer |
+| 429 weekly / monthly | account | matching window |
+| 403 billing-cycle | account / weekly | cool until `nextWeeklyResetAt`; next key |
+| 403 access terminated | account | long, no probe |
+| 403 URL security risk | request | pass through |
+| unknown 403 | request | pass through; do not poison the pool |
+| 401 model / 1M / tier | capability | cool that model on that account only |
+| 401 invalid key | credential | credential circuit |
+| 5xx / 408 / network | ambiguous | health only; no POST replay |
 
-`Retry-After` takes precedence over `X-RateLimit-Reset`; both can drive exact
-quota cooldowns. Recovery probes use real user traffic, and the router
-generates no synthetic billable requests. Ambiguous replay is allowed only
-for safe methods, a request carrying an idempotency key, or the explicit and
-risk-bearing `KIMI_RETRY_AMBIGUOUS_REQUESTS=1` opt-in.
+`Retry-After` wins over `X-RateLimit-Reset`. Weekly 403 on 2026-08-17 sent
+neither header; the console epoch is what sets the landing.
 
-The classifier is grounded in Kimi's official
-[error reference](https://www.kimi.com/code/docs/en/kimi-code/error-reference.html)
-and [membership documentation](https://www.kimi.com/code/docs/en/kimi-code/membership.html).
+---
 
-## Status model
+## Status
 
-`GET /status` includes:
+`kimi --status` / `GET /status` (bearer from
+`~/.config/kimi-router/management.header`):
 
-- active/available/cooling/retiring accounts;
-- account and model-specific circuits;
-- in-flight, accepted, completed, and failed-stream counters;
-- bounded queue depth and limit;
-- TTFB EWMA and optional upstream rate-limit telemetry;
-- authoritative attempt ordering and recovery-probe state;
-- exact cooldown/recovery timestamps and remaining milliseconds for countdowns;
-- secret source (`keychain`, never the secret).
+- `available` / `cooling` / `retiring`
+- `lastStatus`, `lastUpstreamMessage` (Kimi’s sentence, not our paraphrase)
+- `quotaWindow.kind` + `source` (`console-7d`, `retry-after`, `policy`)
+- `nextWeeklyResetAt`, `weeklyResetEpoch`
+- `extraUsageHint` when **every** key is billing-cycle 403
+- in-flight / accepted / completed / fails
+- secret `source` (`keychain`), never the secret
 
-Management endpoints are loopback-only, protected against foreign `Host` and
-browser `Origin` values, and bearer-authenticated when the installer-managed
-`management.header` file is present. The launcher passes that file to curl
-without placing the token in process arguments:
+Management: `/healthz`, `/status`, `/prefer`, `/reload`, `/reset`.
 
-| Endpoint | Purpose |
+---
+
+## Layout
+
+| Path | Role |
 |---|---|
-| `GET /healthz` | liveness/readiness; 503 while draining |
-| `GET /status` | redacted pool diagnostics |
-| `POST /prefer` | temporary labelled preference |
-| `POST /reload` | hot pool reload |
-| `POST /reset` | operator-only circuit reset |
+| `bin/kimi-router.mjs` | process boundary; only place that reads `process.env` |
+| `bin/kimi` | launcher |
+| `bin/install.mjs` | copy + launchd |
+| `src/router.mjs` | `startRouter(config)` |
+| `src/weekly-reset.mjs` | 7-day landings |
+| `src/config.mjs` | `resolveRouterConfig` |
+| `src/secret-store.mjs` | Keychain / Secret Service |
+| `src/provider-adapters.mjs` | membership vs Open Platform vs custom |
+| `~/.local/share/kimi-router/` | installed copy (`bin/` + `src/`) |
+| `~/.kimi-key-router-state.json` | redacted health; disposable |
+| `~/.local/state/kimi-router/router.jsonl` | events |
 
-## Install and update
+---
 
-The attached public GitHub Release tarball is the no-registry-login install
-path:
+## For agents
 
-```bash
-npm install --global \
-  https://github.com/braintied/kimi-router/releases/download/v0.1.1/braintied-kimi-router-0.1.1.tgz
-```
+**This is the Kimi membership pool.** Do not start a second router, a second
+Keychain service, or a per-repo failover script.
 
-GitHub Packages requires authentication even for public npm packages. To use the
-registry build, create a classic GitHub PAT with `read:packages`, authenticate
-interactively, then install:
+| Job | Use | Do not |
+|---|---|---|
+| Kimi Code membership failover | this package, `:8787` | vault `moonshot/api_key` |
+| Open Platform (moonshot.ai) | vault `moonshot/api_key` | these four membership keys |
+| Grok / SuperGrok OIDC | `xai-oauth-bridge` `:8792` + `ora-xai-bridge` | this package |
+| Claude Max | official `claude` login / `:8790` tunnel | Keychain pooling |
+| Fleet pins / inventory | `ora-model` in `ora-ai/platform` | a new `@braintied/model-routing` |
+| Spend | `@braintied/cost` | a token counter here |
 
-```bash
-npm login --scope=@braintied --auth-type=legacy \
-  --registry=https://npm.pkg.github.com
-npm install --global @braintied/kimi-router@0.1.1
-```
+`docs/agents/model-routing.md` in ora-ai: **do not create
+`@braintied/model-routing`**. Cortex pins are Ora policy. Extract export
+helpers only when a second product needs the inventory without an ora-ai
+checkout.
 
-Never commit the PAT or put it directly in a command. GitHub documents the
-authentication requirement in
-[Working with the npm registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
+Never print Keychain `-w` output, `management.header`, membership keys, or
+`accounts.meta.json` emails into a transcript you will publish. Status and
+`--doctor` are the allowed surfaces.
 
-Run tests first, migrate a legacy plaintext pool if one exists, install without
-interrupting the service, validate on a parallel port, then activate:
+On weekly 403 for all four seats (measured 2026-08-17): auto-switch already
+walked the pool. Isolated `/coding/v1/chat/completions` on each key returned
+the same billing-cycle sentence. `/models` was 200 (keys valid).
+`api.moonshot.ai/v1/users/me/balance` was 401 (not Open Platform keys).
+Do not “fix switching.” Enable Extra Usage on the membership that holds the
+USD, or wait for `nextWeeklyResetAt`.
 
-```bash
-npm run gate
-npm run artifact:check
-npm run release:build       # writes ignored tarball, checksum, and provenance
-node migrate-keychain.mjs --dry-run
-node migrate-keychain.mjs --delete-legacy
-node install.mjs
-node install.mjs --activate
-kimi --doctor
-```
+After Extra Usage is **on** in the Kimi Code Console for that mailbox:
+`kimi --reset` once, then one real request.
 
-The installer validates syntax and the generated plist. Activation restores and
-reloads the previous plist if the new launchd bootstrap fails.
+Source of truth for this package is `braintied/stack` →
+`packages/kimi-router`. `braintied/kimi-router` is the public snapshot +
+Release tarball. Edit the stack tree; `scripts/sync-public.mjs --apply --push`
+updates GitHub.
+
+---
+
+## What this package does not do
+
+- Read Extra Usage dollars or 5-hour remaining. No membership usage API.
+- Spend Open Platform balance.
+- Pool Claude Max, Codex, or Grok OAuth.
+- Bind a public address. `KIMI_ROUTER_ALLOW_REMOTE=1` is for a separately
+  authenticated gateway only.
+- Auto-deploy. `git push` does not ship this. Publish is
+  `node scripts/stack.mjs publish --only kimi-router` from stack, then a
+  GitHub Release on `braintied/kimi-router`.
+
+---
 
 ## Configuration
 
-See the complete [configuration reference](docs/CONFIGURATION.md).
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md). Environment is read only in
+`bin/kimi-router.mjs`.
 
 | Variable | Default |
 |---|---|
 | `KIMI_ACCOUNTS_FILE` | `~/.kimi-key-accounts` |
+| `KIMI_ACCOUNTS_META_FILE` | `~/.config/kimi-router/accounts.meta.json` |
 | `KIMI_KEYCHAIN_SERVICE` | `ai.ora.kimi-key-router` |
-| `KIMI_SECRET_BACKEND` | `auto` (macOS Keychain or Linux Secret Service) |
 | `KIMI_PROVIDER_PROFILE` | `kimi-code-membership` |
-| `KIMI_BASE_URL` | selected profile's secure default |
-| `KIMI_ROUTER_LOCK` | state path plus `.lock` |
 | `KIMI_ROUTER_STATE` | `~/.kimi-key-router-state.json` |
-| `KIMI_LOG_FILE` | `~/.local/state/kimi-router/router.jsonl` |
-| `KIMI_MANAGEMENT_TOKEN_FILE` | `~/.config/kimi-router/management.header` |
 | `HOST` / `PORT` | `127.0.0.1` / `8787` |
 | `KIMI_MAX_INFLIGHT_PER_KEY` | `24` |
-| `KIMI_MAX_QUEUE_DEPTH` | `128` |
-| `KIMI_QUEUE_TIMEOUT_MS` | `15000` |
 | `KIMI_COOLDOWN_5H_MS` | `18000000` |
-| `KIMI_ERROR_BODY_MAX_BYTES` | `1048576` |
-| `KIMI_RETRY_AMBIGUOUS_REQUESTS` | unset/disabled |
-| `KIMI_RECOVERY_PROBE_INITIAL_MS` | `30000` |
 | `KIMI_RECOVERY_PROBE_MAX_MS` | `300000` |
-| `KIMI_DRAIN_TIMEOUT_MS` | `120000` |
-| `KIMI_LOG_MAX_BYTES` / `KIMI_LOG_RETAIN` | `5242880` / `3` |
 
-`KIMI_KEYS_FILE` and `KIMI_API_KEYS` remain available for isolated tests and
-migration only. An explicit `KIMI_KEYS_FILE` takes precedence so tests never
-touch the production Keychain pool.
+`KIMI_API_KEYS` is tests only and warns.
 
-## Provider and subscription boundary
+---
 
-This router is for personal interactive accounts the operator owns and is not a
-shared gateway, resale service, or background automation system. Kimi's
-[community guidelines](https://www.kimi.com/code/docs/en/kimi-code/community-guidelines.html)
-and [user agreement](https://www.kimi.com/user/agreement/en/modelUse) govern use.
-Do not use pooling to evade provider restrictions; obtain written provider
-confirmation if account pooling is unclear for a particular plan.
-
-Claude Max subscriptions are not API-key pools. They use Anthropic login/session
-credentials and should remain on Anthropic's official login flow. The launcher
-does not extract, copy, or rotate Max credentials. Use `claude` for the normal
-Anthropic session and `kimi` for a Kimi-backed process.
-
-Claude Code reads provider/base-URL credentials at process startup. Switching
-between Kimi, Anthropic, or another compatible provider therefore requires
-starting a new Claude Code process. A saved conversation may be resumed after
-relaunch, but the already-running process cannot safely change providers in
-place.
-
-## Tests
+## Tests and release
 
 ```bash
 npm run gate
 npm run artifact:check
-xcrun swiftc -typecheck keychain-write.swift
+npm run release:build
 ```
 
-Release builds refuse dirty tracked trees, derive timestamps from the source
-commit, and emit a tarball plus `.sha256` and `.provenance.json` files. CI builds
-the tarball twice and requires byte-for-byte equality. Portable CI and package
-publication use Ubuntu; the Keychain helper and full macOS path have a separate
-manually dispatched macOS validation workflow.
+`weekly-reset.test.mjs` is the 2026 landing table. `router.test.mjs` covers
+failover, reset, and last-upstream-message. `router.v3.test.mjs` covers
+unknown-403 safety and management auth.
 
-The suites use mock upstreams and a production-disabled fake clock. They cover
-schema migration, corrupt-state quarantine, live/stale writer locks, structured
-errors, explicit quota-window sources, the exhausted-account/usable-capacity
-regression, account-alias validation, and credential rotation while an accepted
-stream survives.
-
-The v3 suite also covers official error scopes, no-spray provider/request failures,
-model circuits, unknown-403 safety, ambiguous replay suppression, exact reset
-headers, management authentication, both orderings of contradictory concurrent
-results, leak-proof in-flight accounting, load distribution, bounded
-queueing, automatic and explicit hot reload, draining removed keys, bounded
-error bodies, and graceful completion of an active stream.
+Release tarball goes on
+[GitHub Releases](https://github.com/braintied/kimi-router/releases).
+Registry package is `@braintied/kimi-router` on `npm.pkg.github.com`.
 
 ## Manuals
 
-- [CLI reference](docs/CLI.md)
+- [CLI](docs/CLI.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Operations runbook](docs/OPERATIONS.md)
+- [Operations](docs/OPERATIONS.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Provider profiles](docs/PROVIDERS.md)
-- [Error and replay policy](docs/ERROR-POLICY.md)
-- [Management authentication](docs/MANAGEMENT-AUTH.md)
+- [Providers](docs/PROVIDERS.md)
+- [Error policy](docs/ERROR-POLICY.md)
+- [Management auth](docs/MANAGEMENT-AUTH.md)
 - [Migration](docs/MIGRATION.md)
-- [Security and threat model](SECURITY.md)
-- [Release procedure](docs/RELEASE.md)
+- [Threat model](docs/THREAT-MODEL.md)
+- [Release](docs/RELEASE.md)

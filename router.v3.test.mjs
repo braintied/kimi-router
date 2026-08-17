@@ -10,7 +10,7 @@ const KEY_FILE = '/tmp/kimi-router-v3-keys';
 const STATE_FILE = '/tmp/kimi-router-v3-state.json';
 const LOG_FILE = '/tmp/kimi-router-v3.jsonl';
 const MANAGEMENT_TOKEN = 'test-management-token';
-const routerPath = new URL('./router.mjs', import.meta.url).pathname;
+const routerPath = new URL('./bin/kimi-router.mjs', import.meta.url).pathname;
 
 const primaryEntry = '# primary@example.com\ntest-primary\n';
 const rotatedPrimaryEntry = '# primary@example.com\ntest-primary-rotated\n';
@@ -376,7 +376,14 @@ check(
 await reset();
 await prefer();
 const retiringRequest = post('hold');
-await sleep(40);
+// Wait for the request to actually BE in flight rather than sleeping a fixed
+// 40ms and hoping. The reload below can only mark the key retiring-with-work
+// if the router has already accounted the request, so a machine slow enough to
+// miss that window failed this check for a reason that has nothing to do with
+// draining. It only ever failed under the parallel gate, never in isolation.
+const inFlightRegistered = await waitUntil(async () =>
+  (await status()).keys.find((k) => k.label === 'primary@example.com')?.inFlight === 1);
+check('the held request registers as in-flight before the key is removed', inFlightRegistered);
 fs.writeFileSync(KEY_FILE, backupEntry + thirdEntry, { mode: 0o600 });
 const reloadResponse = await fetch(`${base}/reload`, { method: 'POST', headers: managementHeaders });
 const reloadBody = await reloadResponse.json();

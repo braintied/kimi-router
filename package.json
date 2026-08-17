@@ -1,24 +1,19 @@
 {
   "name": "@braintied/kimi-router",
-  "version": "0.1.1",
+  "version": "1.0.2",
   "description": "Local, health-aware Kimi credential router and Claude Code launcher",
   "type": "module",
   "bin": {
-    "kimi-router": "./router.mjs",
-    "kimi-claude": "./kimi",
-    "kimi-router-install": "./install.mjs",
-    "kimi-router-migrate": "./migrate-keychain.mjs",
-    "kimi-router-relabel": "./relabel-accounts.mjs"
+    "kimi-router": "./bin/kimi-router.mjs",
+    "kimi-claude": "./bin/kimi",
+    "kimi-router-install": "./bin/install.mjs",
+    "kimi-router-migrate": "./bin/migrate-keychain.mjs",
+    "kimi-router-relabel": "./bin/relabel-accounts.mjs"
   },
   "files": [
-    "router.mjs",
-    "provider-adapters.mjs",
-    "secret-store.mjs",
-    "kimi",
-    "install.mjs",
-    "migrate-keychain.mjs",
+    "bin",
+    "src",
     "keychain-write.swift",
-    "relabel-accounts.mjs",
     "keychain-relabel.swift",
     "README.md",
     "SECURITY.md",
@@ -28,8 +23,8 @@
     "scripts"
   ],
   "scripts": {
-    "check": "node --check router.mjs && node --check provider-adapters.mjs && node --check secret-store.mjs && node --check scripts/build-release.mjs && node --check install.mjs && node --check migrate-keychain.mjs && node --check relabel-accounts.mjs && zsh -n kimi",
-    "test": "node provider-adapters.test.mjs && node secret-store.test.mjs && node relabel-accounts.test.mjs && node router.test.mjs && node router.v3.test.mjs && node state-lifecycle.test.mjs && node launcher.test.mjs",
+    "check": "node --check src/router.mjs && node --check src/config.mjs && node --check src/weekly-reset.mjs && node --check src/provider-adapters.mjs && node --check src/secret-store.mjs && node --check src/relabel-accounts.mjs && node --check scripts/build-release.mjs && node --check bin/kimi-router.mjs && node --check bin/install.mjs && node --check bin/migrate-keychain.mjs && node --check bin/relabel-accounts.mjs && zsh -n bin/kimi",
+    "test": "node config.test.mjs && node weekly-reset.test.mjs && node provider-adapters.test.mjs && node secret-store.test.mjs && node relabel-accounts.test.mjs && node router.test.mjs && node router.v3.test.mjs && node state-lifecycle.test.mjs && node launcher.test.mjs",
     "secrets:check": "node scripts/check-secrets.mjs",
     "artifact:check": "node scripts/inspect-package.mjs",
     "release:build": "node scripts/build-release.mjs",
@@ -52,7 +47,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/braintied/kimi-router.git"
+    "url": "git+https://github.com/braintied/stack.git",
+    "directory": "packages/kimi-router"
   },
   "homepage": "https://github.com/braintied/kimi-router#readme",
   "bugs": {
@@ -60,5 +56,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "braintied": {
+    "tier": "tool"
   }
 }

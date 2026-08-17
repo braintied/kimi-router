@@ -16,7 +16,7 @@ The target domain model deliberately separates:
 - **Route**: a provider profile, endpoint family, model, account, and credential.
 - **QuotaWindow**: a five-hour, monthly, or provider-reported reset window.
 
-`provider-adapters.mjs` makes each provider's protocol, upstream default,
+`src/provider-adapters.mjs` makes each provider's protocol, upstream default,
 authentication mode, and quota domain explicit. One router process owns one
 adapter because the proxy does not translate Anthropic Messages into OpenAI Chat
 Completions. Different protocol families require separate processes and ports.

@@ -9,7 +9,7 @@ import {
   normalizeAlias,
   parseArgs,
   readAccountReferences,
-} from './relabel-accounts.mjs';
+} from './src/relabel-accounts.mjs';
 
 assert.equal(normalizeAlias(' Team-Primary '), 'team-primary');
 assert.throws(() => normalizeAlias('user@example.test'), /opaque names/);

@@ -5,7 +5,7 @@ import {
   applyProviderAuthentication,
   publicProviderMetadata,
   resolveProviderAdapter,
-} from './provider-adapters.mjs';
+} from './src/provider-adapters.mjs';
 
 const membership = resolveProviderAdapter({});
 assert.equal(membership.id, 'kimi-code-membership');

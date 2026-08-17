@@ -58,7 +58,8 @@ function normalizeAuthMode(value, fallback) {
   return mode;
 }
 
-export function resolveProviderAdapter(env = process.env) {
+/** @param {Record<string, string|undefined>} env  supplied by the caller; never read from the process */
+export function resolveProviderAdapter(env) {
   const requested = (env.KIMI_PROVIDER_PROFILE || 'kimi-code-membership').trim().toLowerCase();
   const profileId = PROFILE_ALIASES.get(requested);
   if (profileId === undefined) {

@@ -1,12 +1,14 @@
-#!/usr/bin/env node
+/**
+ * Transactional Keychain account relabeling.
+ *
+ * Reads no environment: `run` takes the account file and Keychain service it
+ * should act on. `bin/relabel-accounts.mjs` resolves those from the host.
+ */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-
-process.umask(0o077);
 
 export function normalizeAlias(value) {
   const alias = String(value ?? '').trim().toLowerCase();
@@ -83,7 +85,7 @@ export function atomicWriteAccounts(accountsFile, aliases, fsApi = fs) {
   }
 }
 
-function usage() {
+export function usage() {
   console.log(`Usage:
   kimi-router-relabel --alias NAME [--alias NAME ...] [--dry-run] [--delete-old]
   kimi-router-relabel --audit
@@ -106,13 +108,16 @@ function invokeHelper(helper, request) {
   return { status: result.status, parsed };
 }
 
-export function run(options, env = process.env) {
+/**
+ * @param {object} options  parsed command line
+ * @param {{accountsFile: string, service: string}} target  resolved by the host
+ */
+export function run(options, target) {
   if (process.platform !== 'darwin') {
     throw new Error('transactional account relabeling currently requires macOS Keychain');
   }
-  const accountsFile = env.KIMI_ACCOUNTS_FILE || path.join(os.homedir(), '.kimi-key-accounts');
-  const service = env.KIMI_KEYCHAIN_SERVICE || 'ai.ora.kimi-key-router';
-  const helper = fileURLToPath(new URL('./keychain-relabel.swift', import.meta.url));
+  const { accountsFile, service } = target;
+  const helper = fileURLToPath(new URL('../keychain-relabel.swift', import.meta.url));
   if (options.audit) {
     const audit = invokeHelper(helper, { operation: 'audit', service, mappings: [] });
     if (audit.parsed === null || typeof audit.parsed.total !== 'number' ||
@@ -177,20 +182,4 @@ export function run(options, env = process.env) {
     reused: Number(copied.parsed.reused || 0),
     deleted,
   };
-}
-
-async function main() {
-  try {
-    const options = parseArgs(process.argv.slice(2));
-    if (options.help) { usage(); return; }
-    run(options);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
-const invokedPath = process.argv[1] ? fs.realpathSync(process.argv[1]) : '';
-if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
-  await main();
 }

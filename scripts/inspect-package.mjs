@@ -19,7 +19,10 @@ try {
   fs.rmSync(npmCache, { recursive: true, force: true });
 }
 
-const result = JSON.parse(output)[0];
+const parsed = JSON.parse(output);
+const result = Array.isArray(parsed)
+  ? parsed[0]
+  : parsed['@braintied/kimi-router'] || Object.values(parsed)[0];
 if (!result || !Array.isArray(result.files)) throw new Error('npm pack returned no file manifest');
 
 const forbiddenNames = [

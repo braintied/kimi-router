@@ -16,6 +16,7 @@ Usage:
   kimi --prefer NAME   Prefer an account temporarily (automatic failover remains)
   kimi --auto          Clear preference and return to fully automatic routing
   kimi --reload        Hot-reload Keychain labels without interrupting sessions
+  kimi --reset         Clear every account/provider circuit (after a verified top-up)
   kimi --restart       Gracefully drain and restart the local key router
   kimi --doctor        Check launcher, service, Keychain source, and pool health
   kimi --logs          Show the latest structured router events
@@ -69,6 +70,7 @@ case "${1:-}" in
       (if .summary.preferredLabel then
         "Preference: \(.summary.preferredLabel) until \(.summary.preferredUntil)"
        else "Preference: automatic" end),
+      (if .summary.extraUsageHint then "\n\(.summary.extraUsageHint)" else empty end),
       "",
       (.keys[] |
         if .recoveryProbeInFlight then
@@ -86,6 +88,8 @@ case "${1:-}" in
         else
           "× \(.label) — \(.health); \(duration(.cooldownRemainingMs)) remaining until \(.cooldownUntil) — \(.cooldownReason)"
         end
+        + (if .lastUpstreamMessage then "\n    upstream: \(.lastUpstreamMessage)" else "" end)
+        + (if .nextWeeklyResetAt then "\n    weekly reset: \(.nextWeeklyResetAt)" else "" end)
       )'
     exit 0
     ;;
@@ -131,6 +135,14 @@ case "${1:-}" in
       exit 1
     fi
     router_curl -fsS -X POST "$router_url/reload" | jq .
+    exit 0
+    ;;
+  --reset)
+    if ! wait_for_router; then
+      print -u2 'Kimi key router is not running.'
+      exit 1
+    fi
+    router_curl -fsS -X POST "$router_url/reset" | jq -r 'if .reset then "Cleared every account and provider circuit. Next request will try the pool." else . end'
     exit 0
     ;;
   --restart)

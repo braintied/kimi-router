@@ -40,7 +40,7 @@ email-shaped identifiers.
 2. Build twice and compare the release tarballs byte-for-byte.
 3. Install without activation; validate the copied files and a parallel
    candidate using a distinct port/state path.
-4. Run `node install.mjs --activate` only after candidate health passes.
+4. Run `node bin/install.mjs --activate` only after candidate health passes.
 5. The installer signals the old service, allows up to 125 seconds for streams
    to drain, bootstraps the new plist, and waits for health.
 6. If bootstrap/health fails, it restores router, provider adapter, secret-store
@@ -57,6 +57,10 @@ Do not repeatedly reset. Inspect each `quotaWindow.source`:
 If any account is `available`, routing should use it immediately. A status state
 where an exhausted active account coexists with unused eligible capacity is a
 regression and should be reported with redacted state fields and test steps.
+
+After a verified Extra Usage top-up, `kimi --reset` once. Status will show
+`lastUpstreamMessage` on the next 403 so a Console credit that is not Extra
+Usage is visible instead of looking like a stuck switcher.
 
 Policy-derived quota cooldowns use serialized real-traffic recovery checks with
 bounded backoff. Provider-supplied reset headers and explicit five-hour timers

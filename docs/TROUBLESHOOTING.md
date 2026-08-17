@@ -30,8 +30,11 @@ Run `kimi --status`. The usable account must show `available: true`; the
 exhausted account should expose a `quotaWindow`, cooldown, and recovery time.
 Automatic routing ignores cooling accounts even if they were previously active
 or preferred. If metadata contradicts the provider after an operator-verified
-top-up, `kimi --reload` first; use the protected `/reset` through the launcher
-only when you intentionally want to clear every circuit.
+top-up, `kimi --reload` first; then `kimi --reset` to clear every circuit. Do
+not poll reset. When every key is billing-cycle 403, `--status` prints the
+upstream sentence and an Extra Usage hint: Extra Usage on that Kimi Code
+membership is consumed automatically and would not 403. Open Platform balance
+is a different product.
 
 The router never spends quota on synthetic probes. When a conservative recovery
 deadline arrives, one real client request probes the account and concurrent

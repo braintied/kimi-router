@@ -51,7 +51,10 @@ try {
       stdio: ['ignore', 'pipe', 'inherit'],
     }
   );
-  [packed] = JSON.parse(output);
+  const parsed = JSON.parse(output);
+  packed = Array.isArray(parsed)
+    ? parsed[0]
+    : parsed['@braintied/kimi-router'] || Object.values(parsed)[0];
 } finally {
   fs.rmSync(npmCache, { recursive: true, force: true });
 }

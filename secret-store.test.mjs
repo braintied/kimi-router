@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { createSecretStore } from './secret-store.mjs';
+import { createSecretStore } from './src/secret-store.mjs';
 
 let calls = [];
 const mac = createSecretStore({
