@@ -12,12 +12,79 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-const MOCK_PORT = 9911;
-const ROUTER_PORT = 9910;
-const STATE = '/tmp/kimi-router-test-state.json';
-const KEYS = '/tmp/kimi-router-test-keys';
+// Ports are asked for, never picked. Three were hardcoded (9911, 9910, and a
+// bare 9930 at the non-loopback spawn), so ANY abandoned run anywhere on the
+// machine silently took this suite over: the spawn lost the bind, the child
+// died, and the squatter answered every request in its place. Measured
+// 2026-08-22 — an orphan from a different worktree held 9910 for two hours and
+// the suite reported it as a mid-stream abort bug in the router.
+//
+// Binding :0 and closing leaves a TOCTOU gap, so this is a large reduction in
+// collision odds rather than a proof. assertBound() below is what makes the
+// remaining case legible instead of silent.
+async function freePort() {
+  return await new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const MOCK_PORT = await freePort();
+const ROUTER_PORT = await freePort();
+const REFUSED_PORT = await freePort();
+
+/**
+ * A spawned router that loses its bind dies in milliseconds. Every later
+ * request then goes to whoever owns the port, so the suite keeps running and
+ * blames the wrong subsystem. Fail here instead, by name.
+ */
+async function assertBound(child, label, port) {
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (child.exitCode !== null || child.signalCode !== null) {
+    // Name the symptom, not a guessed cause. The first version of this blamed
+    // the port unconditionally and was wrong on its very first real firing —
+    // the collision was the state file's PID lock. The children run with
+    // stdio:'inherit', so their own message is printed directly above this.
+    throw new Error(
+      `${label} exited before serving (code=${child.exitCode} signal=${child.signalCode}) on port ${port}. ` +
+        `Its reason is printed immediately above. If it named a port: ` +
+        `lsof -nP -iTCP:${port} -sTCP:LISTEN`
+    );
+  }
+}
+
+/**
+ * Only wait for 'exit' if the child is still alive. Node does not replay past
+ * events, so attaching a listener to an already-exited child never settles and
+ * the suite hangs until the harness kills it at 300s. That is exactly what an
+ * orphaned squatter produced: the hang, not the two printed FAILs, was the
+ * blocking verdict.
+ */
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+}
+// The ports were not the only shared global. The state file carries a PID lock
+// ("state is already owned by router process N"), so an orphaned router from
+// any other checkout blocks this suite even once the ports are ephemeral —
+// measured 2026-08-22, immediately after the port fix. Keys and the JSONL logs
+// are the same shape. Give the whole fixture its own directory per run: fixing
+// only the resource that burned you leaves its siblings to do it again.
+const FIXTURE = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-router-test-'));
+const STATE = path.join(FIXTURE, 'state.json');
+const KEYS = path.join(FIXTURE, 'keys');
+const LOG = path.join(FIXTURE, 'router.jsonl');
+const REFUSED_LOG = path.join(FIXTURE, 'router-refused.jsonl');
 fs.rmSync(STATE, { force: true });
 fs.writeFileSync(
   KEYS,
@@ -133,7 +200,7 @@ const router = spawn(process.execPath, [routerPath], {
     KIMI_API_KEYS: '',
     KIMI_KEYS_FILE: KEYS,
     KIMI_ROUTER_STATE: STATE,
-    KIMI_LOG_FILE: '/tmp/kimi-router-test.jsonl',
+    KIMI_LOG_FILE: LOG,
     KIMI_LOG_STDOUT: '0',
     KIMI_MANAGEMENT_TOKEN: '',
     KIMI_MAX_BODY_BYTES: '64',
@@ -151,6 +218,7 @@ router.on('exit', () => {
 });
 
 await new Promise((resolve) => setTimeout(resolve, 800));
+await assertBound(router, 'router', ROUTER_PORT);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -448,7 +516,9 @@ const r7 = await new Promise((resolve, reject) => {
       host: '127.0.0.1',
       port: ROUTER_PORT,
       path: '/status',
-      headers: { host: 'evil.example:9910' },
+      // Same port, foreign hostname — the guard is about the HOST, so pin the
+      // port to the real one or the test could pass for the wrong reason.
+      headers: { host: `evil.example:${ROUTER_PORT}` },
     },
     resolve
   );
@@ -476,12 +546,12 @@ const refused = spawn(
   {
     env: {
       ...process.env,
-      PORT: '9930',
+      PORT: String(REFUSED_PORT),
       HOST: '0.0.0.0',
       KIMI_BASE_URL: `http://127.0.0.1:${MOCK_PORT}`,
       KIMI_API_KEYS: 'test-key-1',
      KIMI_ROUTER_STATE: STATE,
-      KIMI_LOG_FILE: '/tmp/kimi-router-test-refused.jsonl',
+      KIMI_LOG_FILE: REFUSED_LOG,
       KIMI_LOG_STDOUT: '0',
     KIMI_MANAGEMENT_TOKEN: '',
     },
@@ -560,8 +630,7 @@ await fetch(`http://127.0.0.1:${ROUTER_PORT}/prefer`, {
 });
 await post({ hello: 'persist-five-hour' });
 await post({ msg: 'weekly-trigger' });
-router.kill('SIGTERM');
-await new Promise((resolve) => router.on('exit', resolve));
+await stopChild(router);
 const persistedBeforeRestart = JSON.parse(fs.readFileSync(STATE, 'utf8'));
 const ordinaryQuotaState = Object.values(persistedBeforeRestart).find((entry) =>
   entry !== null && typeof entry === 'object' && /weekly/.test(entry.cooldownReason ?? '')
@@ -579,7 +648,7 @@ const router2 = spawn(process.execPath, [routerPath], {
     KIMI_API_KEYS: '',
     KIMI_KEYS_FILE: KEYS,
    KIMI_ROUTER_STATE: STATE,
-    KIMI_LOG_FILE: '/tmp/kimi-router-test.jsonl',
+    KIMI_LOG_FILE: LOG,
     KIMI_LOG_STDOUT: '0',
     KIMI_MANAGEMENT_TOKEN: '',
     KIMI_MAX_BODY_BYTES: '64',
@@ -616,8 +685,7 @@ check(
     st16.keys[1].nextRecoveryInMs > 0 &&
     st16.keys[1].nextRecoveryInMs <= 800
 );
-router2.kill('SIGTERM');
-await new Promise((resolve) => router2.on('exit', resolve));
+await stopChild(router2);
 
 // 17. adaptive-health-v1 could persist a successful lastStatus while leaving
 // an earlier cooldownUntil in place. Startup treats the later success as
@@ -638,7 +706,7 @@ const router3 = spawn(process.execPath, [routerPath], {
     KIMI_API_KEYS: '',
     KIMI_KEYS_FILE: KEYS,
    KIMI_ROUTER_STATE: STATE,
-    KIMI_LOG_FILE: '/tmp/kimi-router-test.jsonl',
+    KIMI_LOG_FILE: LOG,
     KIMI_LOG_STDOUT: '0',
     KIMI_MANAGEMENT_TOKEN: '',
     KIMI_COOLDOWN_5H_MS: '400',
@@ -667,8 +735,7 @@ check(
   'persisted success repairs only its own stale cooldown',
   router3Up && st17.keys[0].available && !st17.keys[1].available
 );
-router3.kill('SIGTERM');
-await new Promise((resolve) => router3.on('exit', resolve));
+await stopChild(router3);
 
 mock.close();
 fs.rmSync(KEYS, { force: true });

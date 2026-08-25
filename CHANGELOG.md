@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.0.3
+
+### Patch Changes
+
+- 7306318: The router names a failed bind instead of dying silently, and its test suite no
+  longer shares global state with every other checkout on the machine.
+
+  `server.listen()` had no `error` handler, so EADDRINUSE was an uncaught
+  exception: the process died in milliseconds and whoever already owned the port
+  answered in its place. It now logs the address, the `lsof` command that finds
+  the holder, and exits 98.
+
+  The test suite hardcoded three ports (9910, 9911, 9930), a state file, a keys
+  file and two JSONL log paths under `/tmp` — so any abandoned run anywhere on the
+  machine took it over. Measured 2026-08-22: an orphaned router from an unrelated
+  worktree held 9910 for two hours; the spawned child lost the bind and died, the
+  orphan answered all 50 checks in its place, and the suite reported the two
+  assertions that read `routerExited` as a mid-stream abort bug in the router. The
+  blocking verdict was not those failures but a 300-second hang, because
+  `router.kill()` was followed by `await new Promise((r) => router.on('exit', r))`
+  on a process that had already exited — Node does not replay past events, so the
+  promise never settled.
+
+  Ports now come from the OS (`listen(0)`), and the state, keys and logs live in a
+  per-run `mkdtemp` directory. `stopChild()` only waits on a child that is still
+  alive. `assertBound()` fails immediately after each spawn if the child is
+  already gone.
+
+  The state file was the finding the port fix did not cover: it carries a PID lock
+  ("state is already owned by router process N"), so the orphan still blocked the
+  suite after the ports were ephemeral. Fixing only the resource that burned you
+  leaves its siblings to do it again, which is why the whole fixture moved rather
+  than the ports alone.
+
+  Verified against the live orphan: 50/50 green with it still holding 9910, and
+  re-pinning the port to 9910 fails in **1 second** naming the cause, where it
+  previously hung for 300.
+
 ## 1.0.2
 
 ### Patch Changes

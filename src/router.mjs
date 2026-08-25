@@ -2239,6 +2239,24 @@ export function startRouter(config) {
     });
   }
 
+  // Without this, a failed bind is an uncaught exception: the process dies in
+  // milliseconds with a stack trace nobody reads, and whoever already owns the
+  // port answers in its place. Measured 2026-08-22 — that silence cost a
+  // 300-second test-suite hang blamed on mid-stream abort handling.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      log(`FATAL: ${HOST}:${PORT} is already in use — another router or a stale test fixture owns it.`);
+      log(`check: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+      process.exit(98);
+    }
+    if (err && err.code === 'EACCES') {
+      log(`FATAL: not permitted to bind ${HOST}:${PORT}.`);
+      process.exit(98);
+    }
+    log(`FATAL: listen failed on ${HOST}:${PORT}: ${err && err.message ? err.message : err}`);
+    process.exit(98);
+  });
+
   server.listen(PORT, HOST, () => {
     log(`kimi-key-router listening on http://${HOST}:${PORT}`);
     log(`upstream: ${UPSTREAM}`);
