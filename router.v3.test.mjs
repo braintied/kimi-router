@@ -3,12 +3,33 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
-const ROUTER_PORT = 9920;
-const UPSTREAM_PORT = 9921;
-const KEY_FILE = '/tmp/kimi-router-v3-keys';
-const STATE_FILE = '/tmp/kimi-router-v3-state.json';
-const LOG_FILE = '/tmp/kimi-router-v3.jsonl';
+// Ports asked for and a fixture directory per run, as router.test.mjs has done
+// since 2026-08-22. This file kept 9920/9921 and three fixed /tmp paths, so two
+// stack gates running at once (routine on this Mac) collided: the second run
+// deleted and rewrote the first run's key file before dying on EADDRINUSE.
+// Measured 2026-09-21: a gate in another worktree held 9921 while this file was
+// being fixed. Binding :0 and closing leaves a TOCTOU gap; the liveness check
+// after startup makes that case loud.
+async function freePort() {
+  return await new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const ROUTER_PORT = await freePort();
+const FIXTURE = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-router-v3-test-'));
+const KEY_FILE = path.join(FIXTURE, 'keys');
+const STATE_FILE = path.join(FIXTURE, 'state.json');
+const LOG_FILE = path.join(FIXTURE, 'router.jsonl');
 const MANAGEMENT_TOKEN = 'test-management-token';
 const routerPath = new URL('./bin/kimi-router.mjs', import.meta.url).pathname;
 
@@ -17,10 +38,42 @@ const rotatedPrimaryEntry = '# primary@example.com\ntest-primary-rotated\n';
 const backupEntry = '# backup@example.com\ntest-backup\n';
 const thirdEntry = '# third@example.com\ntest-third\n';
 
-for (const file of [KEY_FILE, STATE_FILE, LOG_FILE]) fs.rmSync(file, { force: true });
 fs.writeFileSync(KEY_FILE, primaryEntry + backupEntry, { mode: 0o600 });
 
 const requests = [];
+
+// Upstream responses the TEST releases, never a timer. 'hold' and
+// 'slow-stream' used to finish after a fixed 300ms, and that 300ms was the only
+// thing keeping a request in flight while the test reloaded keys or sent
+// SIGTERM. On a loaded machine the test's own polling spent the 300ms first, the
+// request completed, and "removed in-flight key drains" failed with nothing in
+// flight to drain. Measured 2026-09-21 on 12 cores under six busy loops: 2 of 30
+// runs at load 36-88, and 2 of 25 interleaved with this version at load 100-285,
+// where this version failed 0 of 25.
+//
+// releaseHeld() opens the valve rather than answering a fixed count, so a
+// request that reaches the upstream after it (a queued one, or one a broken
+// router sent late) is answered at once instead of hanging the file.
+// holdUpstream() closes it again for the next scenario.
+const held = [];
+let holding = true;
+// The upstream side of the latest 'slow-stream', so a test can push a chunk
+// through the router at a moment of its choosing.
+let lastUpstreamStream = null;
+
+function holdUpstream() {
+  holding = true;
+}
+
+function releaseHeld() {
+  holding = false;
+  for (const respond of held.splice(0)) respond();
+}
+
+function holdOrRespond(respond) {
+  if (holding) held.push(respond);
+  else respond();
+}
 
 function sendJson(res, status, message, extra = {}) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -101,7 +154,7 @@ const upstream = http.createServer((req, res) => {
       return;
     }
     if (action === 'hold') {
-      setTimeout(() => sendJson(res, 200, '', { used: key }), 300);
+      holdOrRespond(() => sendJson(res, 200, '', { used: key }));
       return;
     }
     if (action === 'huge-error') {
@@ -112,14 +165,19 @@ const upstream = http.createServer((req, res) => {
     if (action === 'slow-stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write('data: first\n\n');
-      setTimeout(() => res.end('data: last\n\n'), 300);
+      lastUpstreamStream = res;
+      holdOrRespond(() => res.end('data: last\n\n'));
       return;
     }
     sendJson(res, 200, '', { used: key });
   });
 });
 
-await new Promise((resolve) => upstream.listen(UPSTREAM_PORT, '127.0.0.1', resolve));
+await new Promise((resolve, reject) => {
+  upstream.once('error', reject);
+  upstream.listen(0, '127.0.0.1', resolve);
+});
+const UPSTREAM_PORT = upstream.address().port;
 
 let stderr = '';
 const router = spawn(process.execPath, [routerPath], {
@@ -136,11 +194,14 @@ const router = spawn(process.execPath, [routerPath], {
     KIMI_MANAGEMENT_TOKEN: MANAGEMENT_TOKEN,
     KIMI_MAX_INFLIGHT_PER_KEY: '2',
     KIMI_MAX_QUEUE_DEPTH: '1',
-    KIMI_QUEUE_TIMEOUT_MS: '2000',
+    // Both deadlines are ceilings the test must never reach, not behaviour it
+    // checks: a queued request and a draining stream each wait on the test's
+    // own releaseHeld(), which a loaded machine can take seconds to get to.
+    KIMI_QUEUE_TIMEOUT_MS: '60000',
     KIMI_ERROR_BODY_MAX_BYTES: '128',
     KIMI_RECOVERY_PROBE_INITIAL_MS: '60000',
     KIMI_EXPLORATION_INTERVAL_MS: '3600000',
-    KIMI_DRAIN_TIMEOUT_MS: '3000',
+    KIMI_DRAIN_TIMEOUT_MS: '60000',
   },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
@@ -150,7 +211,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitUntil(predicate, timeoutMs = 3000) {
+// A generous bound, not an expected duration: every caller polls for the state
+// its check is about, so on a healthy machine this returns in milliseconds and
+// only a real fault waits it out.
+async function waitUntil(predicate, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -163,9 +227,12 @@ async function waitUntil(predicate, timeoutMs = 3000) {
 
 const base = `http://127.0.0.1:${ROUTER_PORT}`;
 const started = await waitUntil(async () => (await fetch(`${base}/healthz`)).status === 200);
-if (!started) {
+// A healthz answer from a process that is not our child means something else
+// owns the port, and every check below would be talking to it.
+if (!started || router.exitCode !== null) {
   router.kill('SIGKILL');
   upstream.close();
+  fs.rmSync(FIXTURE, { recursive: true, force: true });
   throw new Error(`router did not start: ${stderr}`);
 }
 
@@ -184,6 +251,23 @@ function post(action, model = 'k3') {
 }
 
 const managementHeaders = { authorization: `Bearer ${MANAGEMENT_TOKEN}` };
+
+// How many times the router has reloaded its key pool, from its own log.
+function reloadCount() {
+  if (!fs.existsSync(LOG_FILE)) return 0;
+  return fs.readFileSync(LOG_FILE, 'utf8').split('"message":"key pool reloaded"').length - 1;
+}
+
+// Every key-file write is reloaded twice: once by the explicit POST /reload and
+// once more by the file watcher (1s poll, 250ms debounce), on its own schedule.
+// A reload drops any removed key with nothing in flight. So until the watcher
+// has had its turn, "the drained key left the pool" cannot tell the router's
+// release path from the watcher doing the same job a second later. Deleting the
+// release-path removal passed both drain checks until these waits were added
+// (mutation-checked 2026-09-21).
+async function watcherCaughtUp(reloadsBeforeWrite) {
+  return waitUntil(() => reloadCount() >= reloadsBeforeWrite + 2);
+}
 
 async function status() {
   return (await fetch(`${base}/status`, { headers: managementHeaders })).json();
@@ -327,7 +411,14 @@ check(
 await reset();
 await prefer();
 before = requests.length;
-const loadResponses = await Promise.all([post('hold'), post('hold'), post('hold')]);
+holdUpstream();
+const loadPending = [post('hold'), post('hold'), post('hold')];
+// All three concurrently at the upstream before any answers. A router that
+// queued the third instead of spreading it never reaches three; the wait gives
+// up, the valve opens, and the check below reads which keys it used.
+await waitUntil(() => held.length === 3);
+releaseHeld();
+const loadResponses = await Promise.all(loadPending);
 await Promise.all(loadResponses.map((response) => response.text()));
 const loadKeys = requests.slice(before).map((request) => request.key);
 check('per-key concurrency cap spreads load across healthy accounts', loadKeys.filter((key) => key === 'test-primary').length === 2 && loadKeys.includes('test-backup'));
@@ -335,12 +426,19 @@ const loadStatus = await status();
 check('completed responses release every in-flight attempt exactly once', loadStatus.summary.inFlight === 0);
 
 await reset();
+holdUpstream();
 const saturated = [post('hold'), post('hold'), post('hold'), post('hold')];
-await sleep(40);
+// Every slot held upstream, then exactly one request waiting in the queue,
+// before the one that must be refused is sent. Fixed 40ms sleeps stood in for
+// both conditions.
+await waitUntil(() => held.length === 4);
 const queued = post('hold');
-await sleep(40);
+await waitUntil(async () => (await status()).summary.queueDepth === 1);
 const rejected = await post('hold');
 check('bounded queue rejects excess work instead of growing unbounded', rejected.status === 503);
+// Frees the four slots. The queued request reaches the upstream after that,
+// through the open valve.
+releaseHeld();
 const completedSaturated = await Promise.all([...saturated, queued]);
 await Promise.all(completedSaturated.map((response) => response.text()));
 check('one queued request resumes when capacity is released', completedSaturated.every((response) => response.status === 200));
@@ -351,14 +449,21 @@ check('key file changes hot-reload automatically', autoReloaded);
 
 await reset();
 await prefer();
+holdUpstream();
 const credentialRotationStream = await post('slow-stream');
-await sleep(30);
+// The stream's body stays open until releaseHeld(), so the old credential is
+// still in flight when it is rotated out, however long the reload takes.
+await waitUntil(async () =>
+  (await status()).keys.find((k) => k.label === 'primary@example.com')?.inFlight === 1);
+const reloadsBeforeRotation = reloadCount();
 fs.writeFileSync(KEY_FILE, rotatedPrimaryEntry + backupEntry + thirdEntry, { mode: 0o600 });
 const credentialReload = await fetch(`${base}/reload`, { method: 'POST', headers: managementHeaders });
 const credentialReloadBody = await credentialReload.json();
 await prefer();
 const afterCredentialRotation = await post('ok');
 const afterCredentialRotationBody = await afterCredentialRotation.json();
+await watcherCaughtUp(reloadsBeforeRotation);
+releaseHeld();
 const credentialRotationBody = await credentialRotationStream.text();
 const credentialRotationDrained = await waitUntil(async () =>
   (await status()).keys.filter((key) => key.label === 'primary@example.com').length === 1
@@ -375,21 +480,34 @@ check(
 
 await reset();
 await prefer();
+holdUpstream();
 const retiringRequest = post('hold');
 // Wait for the request to actually BE in flight rather than sleeping a fixed
 // 40ms and hoping. The reload below can only mark the key retiring-with-work
 // if the router has already accounted the request, so a machine slow enough to
 // miss that window failed this check for a reason that has nothing to do with
 // draining. It only ever failed under the parallel gate, never in isolation.
+//
+// Waiting was half the fix. The upstream also answered 'hold' after a fixed
+// 300ms, so on a loaded machine the request could complete between this wait
+// and the reload, leaving nothing to drain. It is now held until released
+// below, after the drain has been observed.
 const inFlightRegistered = await waitUntil(async () =>
   (await status()).keys.find((k) => k.label === 'primary@example.com')?.inFlight === 1);
 check('the held request registers as in-flight before the key is removed', inFlightRegistered);
+const reloadsBeforeRemoval = reloadCount();
 fs.writeFileSync(KEY_FILE, backupEntry + thirdEntry, { mode: 0o600 });
 const reloadResponse = await fetch(`${base}/reload`, { method: 'POST', headers: managementHeaders });
 const reloadBody = await reloadResponse.json();
+await watcherCaughtUp(reloadsBeforeRemoval);
 const duringRetire = await status();
 const retiringKey = duringRetire.keys.find((k) => k.label === 'primary@example.com');
-check('removed in-flight key drains instead of being cut off', reloadBody.retiring === 1 && retiringKey?.retiring && retiringKey.inFlight === 1);
+const drainsInFlight = reloadBody.retiring === 1 && retiringKey?.retiring && retiringKey.inFlight === 1;
+if (!drainsInFlight) {
+  console.log(`    drain detail: reload=${JSON.stringify(reloadBody)} key=${JSON.stringify(retiringKey ?? null)}`);
+}
+check('removed in-flight key drains instead of being cut off', drainsInFlight);
+releaseHeld();
 await (await retiringRequest).text();
 const retired = await waitUntil(async () => !(await status()).keys.some((k) => k.label === 'primary@example.com'));
 check('drained removed key leaves the live pool', retired);
@@ -400,20 +518,56 @@ const hugeBody = await huge.text();
 check('buffered upstream error bodies are capped', huge.headers.get('x-router-error-body-truncated') === 'true' && Buffer.byteLength(hugeBody) === 128);
 
 await reset();
+holdUpstream();
 const stream = await post('slow-stream');
-await sleep(30);
+const streamReader = stream.body.getReader();
+const streamDecoder = new TextDecoder();
+let streamBody = '';
+let streamEnded = false;
+// Read the client's side of the stream until `marker` arrives (null: until it
+// ends), it ends, or the bound passes. True only if that is what happened.
+async function readStreamUntil(marker) {
+  const reached = () => (marker === null ? streamEnded : streamBody.includes(marker));
+  const deadline = Date.now() + 30_000;
+  while (!reached() && !streamEnded) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    let timer;
+    const next = await Promise.race([
+      streamReader.read().catch(() => ({ done: true })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), remaining); }),
+    ]);
+    clearTimeout(timer);
+    if (next === null) return false;
+    if (next.done) streamEnded = true;
+    else streamBody += streamDecoder.decode(next.value, { stream: true });
+  }
+  return reached();
+}
 router.kill('SIGTERM');
-await sleep(60);
-check('SIGTERM starts a drain without killing an active stream', router.exitCode === null);
-const streamBody = await stream.text();
+// The router's own record that it received the signal, instead of a 60ms sleep
+// that proves nothing on a machine where the signal is not handled yet. Then a
+// chunk pushed upstream AFTER that must still come out of the router, which is
+// the direct observation of "did not kill the stream". Reading exitCode right
+// after the log line could not see a router that exits on SIGTERM: the check
+// ran before the test had processed the child's exit (mutation-checked
+// 2026-09-21).
+const drainStarted = await waitUntil(() =>
+  fs.existsSync(LOG_FILE) && fs.readFileSync(LOG_FILE, 'utf8').includes('"message":"graceful drain started"'));
+lastUpstreamStream?.write('data: during-drain\n\n');
+const relayedDuringDrain = await readStreamUntil('data: during-drain');
+check('SIGTERM starts a drain without killing an active stream', drainStarted && relayedDuringDrain && router.exitCode === null);
+releaseHeld();
+await readStreamUntil(null);
 const routerExit = router.exitCode ?? await new Promise((resolve) => router.once('exit', resolve));
 if (!streamBody.includes('data: last') || routerExit !== 0) {
   console.log(`    drain detail: exit=${String(routerExit)} body=${JSON.stringify(streamBody)} stderr=${JSON.stringify(stderr)}`);
 }
 check('graceful drain finishes the stream and exits cleanly', streamBody.includes('data: last') && routerExit === 0);
 
+releaseHeld();
 await new Promise((resolve) => upstream.close(resolve));
-for (const file of [KEY_FILE, STATE_FILE, LOG_FILE]) fs.rmSync(file, { force: true });
+fs.rmSync(FIXTURE, { recursive: true, force: true });
 
 if (failures > 0) {
   console.error(`${failures} router v3 test(s) failed`);

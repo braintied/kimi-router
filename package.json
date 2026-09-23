@@ -1,6 +1,6 @@
 {
   "name": "@braintied/kimi-router",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Loopback proxy that pools Kimi Code membership keys and fails over for Claude Code, OpenCode, and any Anthropic-compatible client",
   "type": "module",
   "bin": {

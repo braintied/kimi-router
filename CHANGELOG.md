@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.4
+
+### Patch Changes
+
+- ddf5770: `router.v3.test.mjs`, which ships in the package, no longer depends on timing or on shared machine state. No router code changed.
+
+  - The fixture's `hold` and `slow-stream` responses wait for the test to release them instead of finishing after a fixed 300ms. "removed in-flight key drains instead of being cut off" can no longer lose its in-flight request to a slow machine.
+  - Fixed 40ms and 60ms sleeps are now polls on the router's `/status` and its own log. The default wait bound went from 3s to 30s, and the queue and drain deadlines from 2s and 3s to 60s, because the test never exercises them.
+  - Both ports are requested from the OS, and the key, state and log files live in a per-run directory, matching `router.test.mjs`. Two stack gates running at once used to collide on 9920/9921 and on three `/tmp` paths.
+  - The two drain checks wait for the key-file watcher's own reload first. Before that, the watcher removed a drained key about a second later, so deleting the release path's removal still passed.
+  - The SIGTERM check now requires a chunk pushed after the router logs the drain to arrive through the router. Reading `exitCode` straight after the log line could not see a router that exits on SIGTERM.
+
+  Measured 2026-09-21 on a 12-core Mac under six extra busy loops. Run 25 times each, alternating old and new files: the old file failed 2 times and the new one 0 times, at a load average of 100 to 285.
+
 ## 1.0.3
 
 ### Patch Changes
